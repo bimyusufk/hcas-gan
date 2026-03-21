@@ -1,0 +1,77 @@
+experiment:
+  name: "HCAS_GAN_CPU_SMOKE"
+  seed: 42
+
+hardware:
+  device: "cpu"
+  num_workers: 0
+
+data:
+  annotations_dir: "./camo_smoke"
+  annotation_format: "labelme_polygon"
+  image_suffix: ".png"
+  annotation_suffix: ".json"
+  target_label: "camou"
+  ignore_labels: ["skin"]
+
+hyperparameters:
+  learning_rate_G: 0.0002
+  learning_rate_D: 0.0002
+  beta1: 0.5
+  beta2: 0.999
+  batch_size: 2
+  epochs: 1
+
+checkpoint:
+  dir: "./checkpoints_smoke"
+  interval: 1
+  keep_last_n: 2
+  resume_from: null
+
+scheduler:
+  enabled: false
+  type: "cosine"
+  kwargs:
+    eta_min: 0.0
+
+tensorboard:
+  enabled: false
+  log_dir: "./runs_smoke"
+  run_name: "cpu_smoke"
+  flush_secs: 30
+
+hcas_specific:
+  lambda_sal: 15.0
+  image_size: 256
+  latent_dim: 100
+
+saliency_model:
+  backend: "proxy"
+  model_name: "DeepGazeIII"
+  pretrained: true
+  trust_repo: true
+  repo: "matthias-k/DeepGaze"
+  centerbias_mode: "zeros"
+  fixation_history_length: 4
+  output_mode: "density"
+  input_range: "0_1"
+  allow_fallback: true
+  verbose: true
+
+augmentations:
+  enabled: true
+  random_mask_rotation: true
+  max_rotation_deg: 15.0
+  mask_scale_range: [0.6, 0.9]
+  max_translate_ratio: 0.05
+  hflip_prob: 0.5
+  color_jitter: true
+  color_jitter_prob: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.1
+  hue: 0.01
+  schedule_enabled: true
+  schedule_start_factor: 0.35
+  schedule_end_factor: 1.0
+  schedule_warmup_epochs: 5

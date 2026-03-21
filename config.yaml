@@ -1,0 +1,77 @@
+experiment:
+  name: "HCAS_GAN_Brent0331_v0"
+  seed: 42
+
+hardware:
+  device: "cuda"
+  num_workers: 8
+
+data:
+  annotations_dir: "./camo"
+  annotation_format: "labelme_polygon"
+  image_suffix: ".png"
+  annotation_suffix: ".json"
+  target_label: "camou"
+  ignore_labels: ["skin"]
+
+hyperparameters:
+  learning_rate_G: 0.0002
+  learning_rate_D: 0.0002
+  beta1: 0.5
+  beta2: 0.999
+  batch_size: 16
+  epochs: 1000
+
+checkpoint:
+  dir: "./checkpoints"
+  interval: 5
+  keep_last_n: 3
+  resume_from: null      # null | "latest" | "./checkpoints/checkpoint_....pt"
+
+scheduler:
+  enabled: true
+  type: "cosine"        # step | cosine | lambda
+  kwargs:
+    eta_min: 0.0         # t_max auto-filled from total epochs when omitted
+
+tensorboard:
+  enabled: true
+  log_dir: "./runs"
+  run_name: null         # null => auto from experiment + timestamp
+  flush_secs: 30
+
+hcas_specific:
+  lambda_sal: 15.0
+  image_size: 256
+  latent_dim: 100
+
+saliency_model:
+  backend: "auto"                 # auto | deepgazeiii_torchhub | proxy
+  model_name: "DeepGazeIII"       # torch.hub model name from matthias-k/DeepGaze
+  pretrained: true
+  trust_repo: true
+  repo: "matthias-k/DeepGaze"
+  centerbias_mode: "zeros"        # zeros | gaussian
+  fixation_history_length: 4
+  output_mode: "density"          # log_density | probability | density | sigmoid
+  input_range: "0_1"              # expected range from dataset loader
+  allow_fallback: true
+  verbose: true
+
+augmentations:
+  enabled: true
+  random_mask_rotation: true
+  max_rotation_deg: 25.0
+  mask_scale_range: [0.3, 0.8]
+  max_translate_ratio: 0.08
+  hflip_prob: 0.5
+  color_jitter: true
+  color_jitter_prob: 0.7
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.15
+  hue: 0.02
+  schedule_enabled: true
+  schedule_start_factor: 0.35
+  schedule_end_factor: 1.0
+  schedule_warmup_epochs: 20
