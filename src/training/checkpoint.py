@@ -70,11 +70,16 @@ class CheckpointManager:
         Returns:
             Path to saved checkpoint file.
         """
+        def _state_dict(module: nn.Module) -> dict[str, Any]:
+            if isinstance(module, torch.nn.DataParallel):
+                return module.module.state_dict()
+            return module.state_dict()
+
         checkpoint_data = CheckpointData(
             epoch=int(epoch),
             step=int(step),
-            generator_state=generator.state_dict(),
-            discriminator_state=discriminator.state_dict(),
+            generator_state=_state_dict(generator),
+            discriminator_state=_state_dict(discriminator),
             optimizer_g_state=optimizer_g.state_dict(),
             optimizer_d_state=optimizer_d.state_dict(),
             scheduler_g_state=scheduler_g.state_dict() if scheduler_g is not None else None,
@@ -140,8 +145,12 @@ class CheckpointManager:
         else:
             checkpoint_data_obj = checkpoint_data
 
-        generator.load_state_dict(checkpoint_data_obj.generator_state)
-        discriminator.load_state_dict(checkpoint_data_obj.discriminator_state)
+        def _load(module: nn.Module, state: dict[str, Any]) -> None:
+            target = module.module if isinstance(module, torch.nn.DataParallel) else module
+            target.load_state_dict(state)
+
+        _load(generator, checkpoint_data_obj.generator_state)
+        _load(discriminator, checkpoint_data_obj.discriminator_state)
         optimizer_g.load_state_dict(checkpoint_data_obj.optimizer_g_state)
         optimizer_d.load_state_dict(checkpoint_data_obj.optimizer_d_state)
 

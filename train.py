@@ -10,6 +10,7 @@ import sys
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 import yaml
 
@@ -43,11 +44,57 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def resolve_device(config: dict) -> torch.device:
-    preferred = str(config.get("hardware", {}).get("device", "cpu")).lower()
-    if preferred == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+def resolve_runtime_hardware(config: dict) -> tuple[torch.device, int]:
+    hardware_cfg = config.get("hardware", {})
+    preferred = str(hardware_cfg.get("device", "auto")).lower()
+
+    cuda_available = torch.cuda.is_available()
+    gpu_count = torch.cuda.device_count() if cuda_available else 0
+
+    if preferred == "cpu":
+        return torch.device("cpu"), 0
+
+    if preferred in ("auto", "cuda") and cuda_available:
+        return torch.device("cuda"), gpu_count
+
+    return torch.device("cpu"), 0
+
+
+def should_use_multi_gpu(config: dict, device: torch.device, gpu_count: int) -> bool:
+    if device.type != "cuda":
+        return False
+
+    multi_gpu_cfg = config.get("hardware", {}).get("multi_gpu", "auto")
+    if isinstance(multi_gpu_cfg, bool):
+        return multi_gpu_cfg and gpu_count >= 2
+
+    policy = str(multi_gpu_cfg).lower()
+    if policy == "off":
+        return False
+    if policy == "on":
+        return gpu_count >= 2
+    return gpu_count >= 2
+
+
+def log_visible_cuda_devices(gpu_count: int) -> None:
+    if gpu_count <= 0:
+        print("[HCAS-GAN] No CUDA devices visible.")
+        return
+
+    device_names = []
+    for idx in range(gpu_count):
+        try:
+            device_names.append(torch.cuda.get_device_name(idx))
+        except Exception as exc:
+            device_names.append(f"<unavailable:{type(exc).__name__}>")
+    print(f"[HCAS-GAN] Visible CUDA devices ({gpu_count}): {device_names}")
+
+
+def maybe_wrap_data_parallel(model: nn.Module, use_multi_gpu: bool, gpu_count: int) -> nn.Module:
+    if use_multi_gpu and gpu_count >= 2:
+        device_ids = list(range(gpu_count))
+        return nn.DataParallel(model, device_ids=device_ids, output_device=0, dim=0)
+    return model
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,8 +159,12 @@ def main() -> None:
     seed = int(config.get("experiment", {}).get("seed", 42))
     set_seed(seed)
 
-    device = resolve_device(config)
-    print(f"[HCAS-GAN] Device: {device}")
+    device, gpu_count = resolve_runtime_hardware(config)
+    multi_gpu = should_use_multi_gpu(config, device, gpu_count)
+    print(
+        f"[HCAS-GAN] Device: {device} | cuda_available={torch.cuda.is_available()} | gpu_count={gpu_count} | multi_gpu={multi_gpu}"
+    )
+    log_visible_cuda_devices(gpu_count)
 
     total_epochs = int(args.epochs or config.get("hyperparameters", {}).get("epochs", 1))
 
@@ -210,8 +261,8 @@ def main() -> None:
         aug_strength = float(train_augmenter.get_strength_factor())
         print(f"[HCAS-GAN] Initial augmentation strength={aug_strength:.3f}")
 
-    generator = GeneratorUNet().to(device)
-    discriminator = PatchDiscriminator().to(device)
+    generator = maybe_wrap_data_parallel(GeneratorUNet().to(device), multi_gpu, gpu_count)
+    discriminator = maybe_wrap_data_parallel(PatchDiscriminator().to(device), multi_gpu, gpu_count)
 
     saliency_cfg = config.get("saliency_model", {})
     saliency_model = DeepGazeWrapper(

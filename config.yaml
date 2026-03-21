@@ -3,8 +3,9 @@ experiment:
   seed: 42
 
 hardware:
-  device: "cuda"
+  device: "auto"
   num_workers: 8
+  multi_gpu: "auto"
 
 data:
   annotations_dir: "./camo"
@@ -12,7 +13,7 @@ data:
   image_suffix: ".png"
   annotation_suffix: ".json"
   target_label: "camou"
-  ignore_labels: ["skin"]
+  ignore_labels: ["skin", "weapon"]
 
 hyperparameters:
   learning_rate_G: 0.0002
