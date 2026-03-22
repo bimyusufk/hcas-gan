@@ -65,3 +65,6 @@ site/
 # Local config overrides
 config.local.yaml
 config.*.local.yaml
+
+# Inference outputs
+inference_outputs/

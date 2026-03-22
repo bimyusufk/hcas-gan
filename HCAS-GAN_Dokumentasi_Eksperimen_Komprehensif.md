@@ -6,7 +6,7 @@ HCAS-GAN adalah sistem AI untuk menghasilkan pola kamuflase yang bukan hanya ter
 
 Secara operasional, alur kerja dimulai dari data anotasi LabelMe, pembuatan mask target, resizing konsisten, dan augmentasi terkontrol. Pada training, model belajar dengan objective gabungan: menjaga kualitas visual sekaligus menekan saliency di area target mask. Pendekatan ini membuat HCAS-GAN lebih relevan untuk skenario kamuflase dibanding GAN konvensional yang hanya mengejar kemiripan visual.
 
-Dari sisi rekayasa sistem, implementasi saat ini sudah mencakup pipeline end-to-end: training loop stabil, fallback backend saliency, checkpoint save/load/resume, learning-rate scheduler, serta logging TensorBoard. Dengan fondasi ini, proyek sudah siap untuk eksperimen berulang yang terukur; langkah lanjutan yang direkomendasikan adalah standardisasi metrik evaluasi kuantitatif dan protokol benchmark antar-run.
+Dari sisi rekayasa sistem, implementasi saat ini sudah mencakup pipeline end-to-end: training loop stabil, fallback backend saliency, checkpoint save/load/resume, learning-rate scheduler, logging TensorBoard, serta evaluasi visual pasca-training dari checkpoint. Dengan fondasi ini, proyek sudah siap untuk eksperimen berulang yang terukur; langkah lanjutan yang direkomendasikan adalah standardisasi metrik evaluasi kuantitatif dan protokol benchmark antar-run.
 
 Dokumen ini menjelaskan sistem **HCAS-GAN (Hybrid Contextual Anti-Saliency GAN)** dari nol sampai level implementasi kode aktual. Struktur penjelasan dibuat untuk dua audiens sekaligus:
 
@@ -768,6 +768,8 @@ flowchart TD
 - Scheduler config-driven.
 - TensorBoard logging terintegrasi.
 - Sanity checks untuk komponen inti.
+- Visual inference dari checkpoint untuk perbandingan `environment | mask | generated pattern | composite`.
+- Ekspor pattern hasil generate dalam bentuk gambar flat 1x1 per sample untuk inspeksi motif.
 
 ## 14.2 Belum/parsial
 
@@ -798,6 +800,7 @@ Fokus ke:
 2. Bagian 6-8 (logika training + kontrak I/O)
 3. Bagian 9-12 (ops/repro/config)
 4. Bagian 13 (decision points)
+5. Bagian 17 (hasil evaluasi visual checkpoint)
 
 ---
 
@@ -817,16 +820,60 @@ Fokus ke:
 | `src/training/checkpoint.py` | Save/load checkpoint + keep-last-n |
 | `src/training/scheduler.py` | Factory scheduler + helper LR |
 | `src/training/tensorboard.py` | Utility writer TensorBoard |
+| `scripts/run_visual_inference.py` | Inference visual dari checkpoint + ekspor pattern flat 1x1 |
+| `inference_outputs/<checkpoint_name>/` | Artefak evaluasi visual dan pattern flat hasil inferensi |
 
 ---
 
-## 17) Penutup
+## 17) Update Eksperimen Terbaru: Evaluasi Visual Checkpoint Final
+
+### 17.1 Konteks run
+
+- Checkpoint evaluasi: `checkpoints/checkpoint_epoch_1000_step_016000.pt`
+- Split evaluasi visual: `test`
+- Jumlah sample target: 6
+- Device inferensi: CPU (kompatibel juga untuk CUDA/auto)
+
+### 17.2 Artefak yang dihasilkan
+
+Lokasi output:
+
+- `inference_outputs/checkpoint_epoch_1000_step_016000/`
+
+File utama:
+
+- `visual_comparison_6samples.png` → panel perbandingan **Environment | Mask | Generated Pattern | Composite**.
+- `pattern_flat_1x1_sample01.png` → flat pattern 1x1 sample pertama.
+- `pattern_flat_1x1_sample02.png` s.d. `pattern_flat_1x1_sample06.png` → flat pattern 1x1 sample lainnya.
+
+### 17.3 Catatan kualitas data saat inferensi
+
+Pada eksekusi evaluasi visual ditemukan sebagian kecil file image dataset tidak dapat dibaca OpenCV (contoh nama file dengan karakter khusus seperti simbol `™`).
+
+Mitigasi yang diterapkan di script inference:
+
+- sample bermasalah di-skip otomatis,
+- inferensi tetap berjalan untuk sample yang valid,
+- jumlah sample sukses vs skipped dicetak pada log run.
+
+### 17.4 Nilai praktis untuk eksperimen
+
+Tambahan pipeline ini memungkinkan evaluasi cepat terhadap:
+
+- kualitas blending pattern terhadap lingkungan,
+- konsistensi bentuk/tekstur pattern di area target,
+- pemilihan checkpoint kandidat terbaik berbasis inspeksi visual.
+
+---
+
+## 18) Penutup
 
 HCAS-GAN pada repository ini sudah mencapai baseline teknis yang solid untuk eksperimen kamuflase berbasis anti-saliency:
 
 - objective hybrid berjalan,
 - pipeline data stabil,
-- komponen training modern (checkpoint/scheduler/logging) sudah terpasang.
+- komponen training modern (checkpoint/scheduler/logging) sudah terpasang,
+- evaluasi visual checkpoint + ekspor pattern flat sudah tersedia.
 
 Langkah berikutnya yang direkomendasikan adalah standardisasi evaluasi kuantitatif dan penyiapan protokol benchmark agar hasil eksperimen antar-run makin mudah dibandingkan.
 

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HCAS-GAN Web Inference</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <main class="container">
+    <h1>HCAS-GAN Web Inference</h1>
+    <p class="meta">
+      Checkpoint: <code>{{ checkpoint_name }}</code> · Device: <code>{{ device }}</code> · Model size: <code>{{ image_size }}x{{ image_size }}</code>
+    </p>
+
+    <section class="card">
+      <h2>1) Upload gambar lingkungan</h2>
+      <input id="imageInput" type="file" accept="image/*" />
+      <p class="hint">Upload gambar, lalu klik titik-titik polygon pada canvas untuk anotasi camou.</p>
+    </section>
+
+    <section class="card">
+      <h2>2) Anotasi area camou</h2>
+      <div class="toolbar">
+        <button id="closePolygonBtn" type="button">Tutup Polygon</button>
+        <button id="clearBtn" type="button">Clear</button>
+        <button id="inferBtn" type="button" class="primary">3) Run Inference</button>
+      </div>
+      <canvas id="canvas"></canvas>
+      <p id="status" class="status">Belum ada gambar.</p>
+    </section>
+
+    <section class="card">
+      <h2>Hasil Inference</h2>
+      <div class="grid4">
+        <figure><figcaption>Environment</figcaption><img id="outEnv" alt="environment" /></figure>
+        <figure><figcaption>Mask</figcaption><img id="outMask" alt="mask" /></figure>
+        <figure><figcaption>Generated Pattern (flat 1x1)</figcaption><img id="outPattern" alt="pattern" /></figure>
+        <figure><figcaption>Composite</figcaption><img id="outComposite" alt="composite" /></figure>
+      </div>
+      <p id="stats" class="hint"></p>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

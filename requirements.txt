@@ -2,6 +2,7 @@ torch>=2.1
 torchvision>=0.16
 numpy>=1.24
 opencv-python>=4.8
+flask>=3.0
 scikit-image>=0.21
 pyyaml>=6.0
 tensorboard>=2.14
