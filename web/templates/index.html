@@ -16,17 +16,40 @@
     <section class="card">
       <h2>1) Upload gambar lingkungan</h2>
       <input id="imageInput" type="file" accept="image/*" />
-      <p class="hint">Upload gambar, lalu klik titik-titik polygon pada canvas untuk anotasi camou.</p>
+      <div class="upload-row">
+        <label class="hint" for="annotationInput">Upload JSON anotasi (opsional)</label>
+        <input id="annotationInput" type="file" accept="application/json,.json" />
+      </div>
+      <p class="hint">Upload gambar, lalu klik titik-titik polygon pada canvas untuk anotasi camou. Kamu juga bisa impor titik dari file JSON.</p>
     </section>
 
     <section class="card">
       <h2>2) Anotasi area camou</h2>
       <div class="toolbar">
+        <label>
+          Mode
+          <select id="composeMode">
+            <option value="tile" {% if compose_mode == 'tile' %}selected{% endif %}>tile (pattern 1x1 -> tempel mask)</option>
+            <option value="direct" {% if compose_mode == 'direct' %}selected{% endif %}>direct (legacy full-image)</option>
+          </select>
+        </label>
+        <label>
+          Tile size
+          <input id="tileSize" type="number" min="4" step="1" value="{{ tile_size }}" />
+        </label>
+        <div class="zoom-controls">
+          <button id="zoomOutBtn" type="button">Zoom -</button>
+          <button id="zoomResetBtn" type="button">Reset Zoom</button>
+          <button id="zoomInBtn" type="button">Zoom +</button>
+          <span id="zoomLabel" class="hint">100%</span>
+        </div>
         <button id="closePolygonBtn" type="button">Tutup Polygon</button>
         <button id="clearBtn" type="button">Clear</button>
         <button id="inferBtn" type="button" class="primary">3) Run Inference</button>
       </div>
-      <canvas id="canvas"></canvas>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="canvas"></canvas>
+      </div>
       <p id="status" class="status">Belum ada gambar.</p>
     </section>
 
@@ -35,13 +58,43 @@
       <div class="grid4">
         <figure><figcaption>Environment</figcaption><img id="outEnv" alt="environment" /></figure>
         <figure><figcaption>Mask</figcaption><img id="outMask" alt="mask" /></figure>
-        <figure><figcaption>Generated Pattern (flat 1x1)</figcaption><img id="outPattern" alt="pattern" /></figure>
+        <figure><figcaption>Generated Pattern (flat 1x1 source)</figcaption><img id="outPattern" alt="pattern" /></figure>
+        <figure><figcaption>Pattern Canvas (used for compose)</figcaption><img id="outPatternCanvas" alt="pattern canvas" /></figure>
         <figure><figcaption>Composite</figcaption><img id="outComposite" alt="composite" /></figure>
       </div>
       <p id="stats" class="hint"></p>
     </section>
+
+    <section class="card">
+      <h2>Preview 3D Pakaian</h2>
+      <p class="hint">Model: <code>long_sleeve_t-_shirt.glb</code>. Tekstur akan otomatis pakai output pattern inference terbaru.</p>
+      <div class="toolbar">
+        <label>
+          Repeat X
+          <input id="repeatX" type="range" min="0.5" max="12" step="0.1" value="4" />
+        </label>
+        <label>
+          Repeat Y
+          <input id="repeatY" type="range" min="0.5" max="12" step="0.1" value="4" />
+        </label>
+        <label>
+          Rotasi (°)
+          <input id="textureRotation" type="range" min="-180" max="180" step="1" value="0" />
+        </label>
+      </div>
+      <p id="preview3dStats" class="hint">RepeatX: 4.0 · RepeatY: 4.0 · Rotasi: 0°</p>
+      <div id="preview3dViewport" class="preview3d"></div>
+    </section>
   </main>
 
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script>
+    window.HCAS_MODEL_GLB_URL = "{{ model_glb_url }}";
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20260323b"></script>
+  <script
+    type="module"
+    src="{{ url_for('static', filename='preview3d.js') }}?v=20260323b"
+    onerror="(function(){var el=document.getElementById('preview3dStats'); if(el){el.textContent='Gagal memuat modul 3D. Coba hard refresh (Ctrl+F5).';}})()"
+  ></script>
 </body>
 </html>

@@ -42,6 +42,47 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-samples", type=int, default=6, help="How many samples to export")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Inference device")
     parser.add_argument(
+        "--compose-mode",
+        type=str,
+        default="tile",
+        choices=["direct", "tile"],
+        help="direct: old behavior (full-image pattern masked). tile: use 1x1 tile source then repeat to canvas before masking.",
+    )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=64,
+        help="Tile source size used when compose-mode=tile.",
+    )
+    parser.add_argument(
+        "--no-random-tiling",
+        action="store_true",
+        help="Disable random flip/rotate/shift/color jitter per tile block.",
+    )
+    parser.add_argument(
+        "--no-color-match",
+        action="store_true",
+        help="Disable local color transfer from environment neighborhood to pattern.",
+    )
+    parser.add_argument(
+        "--ring-width",
+        type=int,
+        default=11,
+        help="Neighborhood ring width used for local color matching.",
+    )
+    parser.add_argument(
+        "--feather-kernel",
+        type=int,
+        default=15,
+        help="Gaussian kernel size for soft mask edge (odd number preferred).",
+    )
+    parser.add_argument(
+        "--feather-sigma",
+        type=float,
+        default=3.0,
+        help="Gaussian sigma for mask feathering.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default="inference_outputs",
@@ -142,6 +183,142 @@ def _compose(background: torch.Tensor, pattern: torch.Tensor, mask: torch.Tensor
     return (background * (1.0 - mask)) + (pattern * mask)
 
 
+def _ensure_odd(v: int) -> int:
+    x = max(1, int(v))
+    return x if (x % 2 == 1) else (x + 1)
+
+
+def _extract_center_tile(pattern: torch.Tensor, tile_size: int) -> torch.Tensor:
+    """Extract a center square tile from [N,3,H,W] pattern tensor."""
+    if pattern.ndim != 4:
+        raise ValueError(f"pattern must be [N,3,H,W], got {tuple(pattern.shape)}")
+    h, w = int(pattern.shape[2]), int(pattern.shape[3])
+    t = max(4, min(int(tile_size), h, w))
+    y0 = (h - t) // 2
+    x0 = (w - t) // 2
+    return pattern[:, :, y0 : y0 + t, x0 : x0 + t]
+
+
+def _tile_to_canvas(
+    tile: torch.Tensor,
+    out_h: int,
+    out_w: int,
+    *,
+    randomize: bool,
+    seed: int,
+) -> torch.Tensor:
+    """Repeat tile [N,3,t,t] to full canvas [N,3,out_h,out_w] with optional randomization."""
+    if tile.ndim != 4:
+        raise ValueError(f"tile must be [N,3,t,t], got {tuple(tile.shape)}")
+    n, c, t_h, t_w = tile.shape
+
+    canvas = torch.zeros((n, c, out_h, out_w), dtype=tile.dtype, device=tile.device)
+    for bi in range(n):
+        rng = np.random.default_rng(seed + bi)
+        y = 0
+        while y < out_h:
+            x = 0
+            while x < out_w:
+                patch = tile[bi]
+                if randomize:
+                    if float(rng.random()) < 0.5:
+                        patch = torch.flip(patch, dims=(1,))
+                    if float(rng.random()) < 0.5:
+                        patch = torch.flip(patch, dims=(2,))
+                    k = int(rng.integers(0, 4))
+                    if k > 0:
+                        patch = torch.rot90(patch, k=k, dims=(1, 2))
+
+                    shift_y = int(rng.integers(0, max(1, t_h)))
+                    shift_x = int(rng.integers(0, max(1, t_w)))
+                    patch = torch.roll(patch, shifts=(shift_y, shift_x), dims=(1, 2))
+
+                    gain = float(rng.uniform(0.92, 1.08))
+                    bias = float(rng.uniform(-0.03, 0.03))
+                    patch = torch.clamp((patch * gain) + bias, 0.0, 1.0)
+
+                h_slice = min(t_h, out_h - y)
+                w_slice = min(t_w, out_w - x)
+                canvas[bi, :, y : y + h_slice, x : x + w_slice] = patch[:, :h_slice, :w_slice]
+                x += t_w
+            y += t_h
+    return canvas
+
+
+def _feather_mask(mask: torch.Tensor, *, kernel_size: int, sigma: float) -> torch.Tensor:
+    """Soft edge alpha mask using Gaussian blur per sample."""
+    if mask.ndim != 4 or mask.shape[1] != 1:
+        raise ValueError(f"mask must be [N,1,H,W], got {tuple(mask.shape)}")
+
+    k = _ensure_odd(kernel_size)
+    s = max(0.1, float(sigma))
+    alpha_np = []
+    for i in range(mask.shape[0]):
+        m = mask[i, 0].detach().float().cpu().clamp(0.0, 1.0).numpy()
+        if k > 1:
+            m = cv2.GaussianBlur(m, (k, k), sigmaX=s, sigmaY=s)
+        m = np.clip(m, 0.0, 1.0)
+        alpha_np.append(m)
+    alpha = torch.from_numpy(np.stack(alpha_np, axis=0)).unsqueeze(1).to(mask.device, dtype=mask.dtype)
+    return alpha
+
+
+def _local_color_transfer(
+    pattern: torch.Tensor,
+    background: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    ring_width: int,
+) -> torch.Tensor:
+    """Match pattern color stats to local background around mask boundary."""
+    if pattern.shape != background.shape:
+        raise ValueError("pattern and background shapes must match")
+    if mask.ndim != 4 or mask.shape[1] != 1:
+        raise ValueError("mask must be [N,1,H,W]")
+
+    rw = max(1, int(ring_width))
+    kernel = np.ones((rw, rw), dtype=np.uint8)
+    out_samples: list[torch.Tensor] = []
+
+    for bi in range(pattern.shape[0]):
+        p = pattern[bi].detach().float().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
+        b = background[bi].detach().float().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
+        m = (mask[bi, 0].detach().float().cpu().numpy() > 0.5).astype(np.uint8)
+
+        if int(m.sum()) == 0:
+            out_samples.append(pattern[bi].detach().cpu())
+            continue
+
+        dil = cv2.dilate(m, kernel, iterations=1)
+        ring = (dil > 0) & (m == 0)
+        if int(ring.sum()) < 32:
+            ring = np.ones_like(m, dtype=bool)
+
+        m_bool = m > 0
+        p_sel = p[m_bool]
+        b_sel = b[ring]
+        if p_sel.size == 0 or b_sel.size == 0:
+            out_samples.append(pattern[bi].detach().cpu())
+            continue
+
+        p_mean = p_sel.mean(axis=0)
+        p_std = p_sel.std(axis=0) + 1e-5
+        b_mean = b_sel.mean(axis=0)
+        b_std = b_sel.std(axis=0) + 1e-5
+
+        p_adj = ((p - p_mean) / p_std) * b_std + b_mean
+        p_adj = np.clip(p_adj, 0.0, 1.0)
+
+        out = p.copy()
+        out[m_bool] = p_adj[m_bool]
+
+        out_t = torch.from_numpy(out).permute(2, 0, 1).float()
+        out_samples.append(out_t)
+
+    out_batch = torch.stack(out_samples, dim=0).to(pattern.device, dtype=pattern.dtype)
+    return out_batch
+
+
 def main() -> None:
     args = _parse_args()
 
@@ -202,8 +379,34 @@ def main() -> None:
     masks = batch["mask"].to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        patterns = generator(images)
-        composites = _compose(images, patterns, masks)
+        patterns_direct = generator(images)
+        if args.compose_mode == "tile":
+            tile_sources = _extract_center_tile(patterns_direct, int(args.tile_size))
+            patterns_used = _tile_to_canvas(
+                tile_sources,
+                int(images.shape[2]),
+                int(images.shape[3]),
+                randomize=(not bool(args.no_random_tiling)),
+                seed=int(args.seed),
+            )
+        else:
+            tile_sources = _extract_center_tile(patterns_direct, int(args.tile_size))
+            patterns_used = patterns_direct
+
+        if not bool(args.no_color_match):
+            patterns_used = _local_color_transfer(
+                patterns_used,
+                images,
+                masks,
+                ring_width=int(args.ring_width),
+            )
+
+        alpha_mask = _feather_mask(
+            masks,
+            kernel_size=int(args.feather_kernel),
+            sigma=float(args.feather_sigma),
+        )
+        composites = _compose(images, patterns_used, alpha_mask)
 
     n = int(images.shape[0])
 
@@ -211,7 +414,8 @@ def main() -> None:
     for i in range(n):
         env_img = _annotate(_to_bgr_u8(images[i]), "Environment")
         mask_img = _annotate(_to_mask_vis(masks[i]), "Mask")
-        pat_img = _annotate(_to_bgr_u8(patterns[i]), "Generated Pattern")
+        pat_label = "Generated Pattern (Tiled)" if args.compose_mode == "tile" else "Generated Pattern"
+        pat_img = _annotate(_to_bgr_u8(patterns_used[i]), pat_label)
         comp_img = _annotate(_to_bgr_u8(composites[i]), "Composite")
 
         row = np.concatenate([env_img, mask_img, pat_img, comp_img], axis=1)
@@ -225,18 +429,25 @@ def main() -> None:
     comparison_path = run_dir / args.output_comparison
     cv2.imwrite(str(comparison_path), comparison)
 
-    # Requested flat 1x1 pattern image: take first generated pattern (already square HxW)
+    # Requested flat 1x1 pattern image: source tile (not full canvas).
     pattern_flat_path = run_dir / args.output_pattern_flat
-    first_pattern = _to_bgr_u8(patterns[0])
-    cv2.imwrite(str(pattern_flat_path), first_pattern)
+    first_tile = _to_bgr_u8(tile_sources[0])
+    cv2.imwrite(str(pattern_flat_path), first_tile)
 
-    # Also export all generated flat patterns for convenience
+    # Also export all source tiles and used full-canvas patterns for convenience
     for i in range(n):
-        p = _to_bgr_u8(patterns[i])
-        cv2.imwrite(str(run_dir / f"pattern_flat_1x1_sample{i+1:02d}.png"), p)
+        tile_img = _to_bgr_u8(tile_sources[i])
+        used_img = _to_bgr_u8(patterns_used[i])
+        cv2.imwrite(str(run_dir / f"pattern_flat_1x1_sample{i+1:02d}.png"), tile_img)
+        cv2.imwrite(str(run_dir / f"pattern_canvas_used_sample{i+1:02d}.png"), used_img)
 
     print(f"[visual inference] checkpoint={checkpoint_path.name}")
-    print(f"[visual inference] split={args.split} samples={n} skipped={skipped} device={device}")
+    print(
+        f"[visual inference] split={args.split} samples={n} skipped={skipped} "
+        f"device={device} compose_mode={args.compose_mode} tile_size={int(args.tile_size)} "
+        f"random_tiling={(not bool(args.no_random_tiling))} color_match={(not bool(args.no_color_match))} "
+        f"feather_kernel={int(args.feather_kernel)} feather_sigma={float(args.feather_sigma):.2f}"
+    )
     print(f"[visual inference] comparison={comparison_path}")
     print(f"[visual inference] pattern_flat_1x1={pattern_flat_path}")
 
