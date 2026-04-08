@@ -2,9 +2,9 @@
 
 ## Ringkasan Eksekutif
 
-HCAS-GAN adalah sistem AI untuk menghasilkan pola kamuflase yang bukan hanya terlihat menyatu dengan lingkungan, tetapi juga berupaya mengurangi kemungkinan area target menarik perhatian visual manusia. Sistem ini menggabungkan tiga komponen inti: **Generator U-Net** (membuat pola), **Discriminator PatchGAN** (menilai realisme lokal), dan **model saliency berbasis DeepGaze** (menilai potensi perhatian visual).
+HCAS-GAN adalah sistem AI untuk menghasilkan pola kamuflase yang bukan hanya terlihat menyatu dengan lingkungan, tetapi juga berupaya mengurangi kemungkinan area target menarik perhatian visual manusia. Pada strategi v2 terbaru, sistem menggabungkan komponen inti **Generator U-Net** (membuat pola), **Discriminator PatchGAN** (menilai realisme lokal), **model saliency berbasis DeepGaze** (menilai potensi perhatian visual), serta regularisasi estetika opsional (**style prior**, **palette constraint**, **frequency profile matching**).
 
-Secara operasional, alur kerja dimulai dari data anotasi LabelMe, pembuatan mask target, resizing konsisten, dan augmentasi terkontrol. Pada training, model belajar dengan objective gabungan: menjaga kualitas visual sekaligus menekan saliency di area target mask. Pendekatan ini membuat HCAS-GAN lebih relevan untuk skenario kamuflase dibanding GAN konvensional yang hanya mengejar kemiripan visual.
+Secara operasional, alur kerja dimulai dari data anotasi LabelMe, pembuatan mask target, resizing konsisten, dan augmentasi terkontrol. Pada training, model belajar dengan objective gabungan: menjaga kualitas visual, menekan saliency di area target mask, dan (opsional) menyesuaikan gaya visual terhadap bank referensi style. Pendekatan ini membuat HCAS-GAN lebih relevan untuk skenario kamuflase dibanding GAN konvensional yang hanya mengejar kemiripan visual.
 
 Dari sisi rekayasa sistem, implementasi saat ini sudah mencakup pipeline end-to-end: training loop stabil, fallback backend saliency, checkpoint save/load/resume, learning-rate scheduler, logging TensorBoard, serta evaluasi visual pasca-training dari checkpoint. Dengan fondasi ini, proyek sudah siap untuk eksperimen berulang yang terukur; langkah lanjutan yang direkomendasikan adalah standardisasi metrik evaluasi kuantitatif dan protokol benchmark antar-run.
 
@@ -17,7 +17,7 @@ Dokumen ini menjelaskan sistem **HCAS-GAN (Hybrid Contextual Anti-Saliency GAN)*
 
 ---
 
-## 1) Tujuan dan Rumusan Masalah
+## 1. Tujuan dan Rumusan Masalah
 
 ### 1.1 Tujuan utama
 
@@ -36,8 +36,11 @@ Jika GAN biasa hanya belajar “terlihat realistis”, maka untuk kamuflase itu 
 
 HCAS-GAN menjawab ini dengan objective gabungan:
 
-- **Adversarial realism** (real/fake dari PatchGAN), dan
-- **Saliency suppression** (penalti atensi di area target mask).
+- **Adversarial realism** (real/fake dari PatchGAN),
+- **Saliency suppression** (penalti atensi di area target mask),
+- **Style consistency (opsional)** melalui statistik Gram multiscale,
+- **Color palette consistency (opsional)** terhadap palet target,
+- **Frequency consistency (opsional)** terhadap profil spektrum target.
 
 ### 1.3 Ringkas untuk awam
 
@@ -55,37 +58,47 @@ flowchart LR
     G[Generator] --> C[Komposit Gambar]
     C --> D[Discriminator PatchGAN]
     C --> S[Model Saliency DeepGaze Wrapper]
+    C --> SP[Style/Palette/Frequency Path opsional]
     D --> LA[Loss Adversarial]
     S --> LS[Loss Saliency pada Area Mask]
+    SP --> LX[Loss Style + Palette + Frequency]
     LA --> LT[Total Generator Loss]
     LS --> LT
+    LX --> LT
 ```
 
 ---
 
-## 2) Metodologi Lengkap
+## 2. Metodologi Lengkap
 
 ## 2.1 Paradigma eksperimen
 
-Metode yang digunakan adalah **GAN training dengan objective hybrid**:
+Metode yang digunakan adalah **GAN training dengan objective hybrid** dalam dua strategi eksperimen:
 
 - Generator: memproduksi pattern untuk area target mask.
 - Discriminator: menilai real image vs image komposit.
 - Saliency model (frozen): menilai area yang berpotensi menarik perhatian.
+- Run A (baseline): objective inti adversarial + saliency.
+- Run B (advanced): objective Run A + style/palette/frequency + (opsional) curriculum sampling area mask.
 
 ### 2.2 Formula objective
 
 Generator dioptimasi dengan:
 
 $$
-L_G = L_{adv} + \lambda_{sal} \cdot L_{sal}
+L_G = L_{adv} + \lambda_{sal} \cdot L_{sal} + \lambda_{style} \cdot L_{style} + \lambda_{palette} \cdot L_{palette} + \lambda_{freq} \cdot L_{freq}
 $$
 
 Dengan implementasi aktual:
 
 - $L_{adv}$: `BCEWithLogitsLoss(D(fake_composite), 1)`
 - $L_{sal}$: rata-rata saliency pada area mask, dinormalisasi luas mask
-- $\lambda_{sal}$: bobot penalti saliency (`hcas_specific.lambda_sal`)
+- $L_{style}$: deviasi statistik Gram multiscale terhadap style bank
+- $L_{palette}$: jarak warna terhadap palet target metadata/dataset
+- $L_{freq}$: jarak profil frekuensi radial terhadap referensi style
+- $\lambda_{sal}$, $\lambda_{style}$, $\lambda_{palette}$, $\lambda_{freq}$: bobot loss pada config
+
+Untuk baseline (Run A), loss opsional di-set 0 sehingga persamaan efektif kembali ke $L_G = L_{adv} + \lambda_{sal}L_{sal}$.
 
 Discriminator:
 
@@ -101,6 +114,7 @@ $$
 ```mermaid
 flowchart TD
     A[Dataset LabelMe] --> B[Load image + polygon mask]
+    A2[Style references + style metadata] --> J2[Optional style objectives]
     B --> C[Resize-aware collate]
     C --> D[Train augmentation - train only]
     D --> E[Generator produce pattern]
@@ -109,6 +123,7 @@ flowchart TD
     F --> H[Saliency path]
     G --> I[Adversarial losses]
     H --> J[Saliency penalty]
+    J2 --> K
     I --> K[Backprop D then G]
     J --> K
     K --> L[Checkpoint + TensorBoard + Scheduler step]
@@ -116,7 +131,7 @@ flowchart TD
 
 ---
 
-## 3) Arsitektur Sistem dan Modul
+## 3. Arsitektur Sistem dan Modul
 
 Berikut modul utama implementasi saat ini:
 
@@ -126,12 +141,20 @@ Berikut modul utama implementasi saat ini:
 - `src/models/discriminator.py`
 - `src/models/deepgaze_wrapper.py`
 - `src/training/loss.py`
+- `src/training/loss_style.py`
+- `src/training/loss_palette.py`
+- `src/training/loss_frequency.py`
+- `src/training/curriculum.py`
 - `src/training/trainer.py`
 - `src/training/checkpoint.py`
 - `src/training/scheduler.py`
 - `src/training/tensorboard.py`
+- `src/data/mask_area_sampler.py`
+- `scripts/extract_style_metadata.py`
 - `train.py`
 - `config.yaml`
+- `config.run_a.yaml`
+- `config.run_b.yaml`
 
 ### 3.1 Diagram arsitektur komponen
 
@@ -179,7 +202,7 @@ flowchart LR
 
 ---
 
-## 4) Alur Data, Input-Output, dan Percabangan Proses
+## 4. Alur Data, Input-Output, dan Percabangan Proses
 
 ## 4.1 Input data
 
@@ -253,7 +276,7 @@ flowchart TD
 
 ---
 
-## 5) Augmentasi Data Lanjutan
+## 5. Augmentasi Data Lanjutan
 
 Augmentasi dikerjakan oleh `CamouflageAugmentationPipeline`.
 
@@ -301,7 +324,7 @@ flowchart LR
 
 ---
 
-## 6) Arsitektur Model
+## 6. Arsitektur Model
 
 ## 6.1 Generator: U-Net
 
@@ -443,7 +466,7 @@ flowchart LR
 
 ---
 
-## 7) Logika Program Training
+## 7. Logika Program Training
 
 ## 7.1 Orkestrasi di `train.py`
 
@@ -454,12 +477,12 @@ Urutan besar:
 3. Set seed dan resolve device
 4. Build dataset + split + dataloader
 5. Build model (`GeneratorUNet`, `PatchDiscriminator`, `DeepGazeWrapper`)
-6. Build loss + optimizer
+6. Build loss (termasuk style/palette/frequency bila aktif) + optimizer
 7. Build scheduler (opsional)
 8. Build checkpoint manager
 9. Build TensorBoard writer (opsional)
 10. Resume checkpoint (opsional)
-11. Loop epoch: train -> val -> scheduler step -> log -> save checkpoint periodik
+11. Loop epoch: train -> val -> scheduler step -> log (`g_style`,`g_palette`,`g_freq` bila aktif) -> save checkpoint periodik
 12. Final test evaluate
 
 ### Diagram sequence orchestration
@@ -531,7 +554,7 @@ flowchart TD
 
 ---
 
-## 8) Input-Output Tiap Proses Utama
+## 8. Input-Output Tiap Proses Utama
 
 | Proses | Input | Output | Catatan |
 |---|---|---|---|
@@ -542,7 +565,7 @@ flowchart TD
 | Compose | background + pattern + mask | `fake_composite[N,3,S,S]` | alpha blend berbasis mask |
 | Discriminator | image/composite | logits patch map `[N,1,hp,wp]` | untuk S=256, hp=wp=30 |
 | Saliency model | `fake_composite[N,3,S,S]` | saliency `[N,1,S,S]` (setelah format) | backend real/proxy |
-| Loss generator | pred fake + saliency + mask | `L_G`, `L_adv`, `L_sal` | objective hybrid |
+| Loss generator | pred fake + saliency + mask (+ optional style refs/metadata) | `L_G`, `L_adv`, `L_sal`, `L_style`, `L_palette`, `L_freq` | objective hybrid v2 |
 | Loss discriminator | pred real + pred fake | `L_D`, `L_real`, `L_fake` | rata-rata 0.5*(real+fake) |
 | Checkpoint save | states + metadata | `.pt` checkpoint file | retain `keep_last_n` |
 | Scheduler step | optimizer state | LR update | tipe step/cosine/lambda |
@@ -567,7 +590,7 @@ flowchart LR
 
 ---
 
-## 9) Checkpointing, Resume, dan Reproducibility
+## 9. Checkpointing, Resume, dan Reproducibility
 
 File: `src/training/checkpoint.py`
 
@@ -617,7 +640,7 @@ flowchart TD
 
 ---
 
-## 10) Learning Rate Scheduling
+## 10. Learning Rate Scheduling
 
 File: `src/training/scheduler.py`
 
@@ -651,7 +674,7 @@ API scheduler dibangun lewat factory `build_scheduler(optimizer, scheduler_type,
 
 ---
 
-## 11) TensorBoard Logging
+## 11. TensorBoard Logging
 
 File: `src/training/tensorboard.py`
 
@@ -663,8 +686,10 @@ File: `src/training/tensorboard.py`
 Di `train.py`, metrik utama yang dicatat per epoch:
 
 - Train/Val: `g_total`, `d_total`, `g_adv`, `g_sal`
+- Train/Val tambahan (bila aktif): `g_style`, `g_palette`, `g_freq`
 - LR `g` dan `d`
 - Augmentation strength (jika ada)
+- Sampling ratio kecil/sedang/besar (jika mask area curriculum sampler aktif)
 - Timing train/val
 - Final test scalar
 
@@ -680,7 +705,7 @@ flowchart LR
 
 ---
 
-## 12) Konfigurasi Eksperimen (`config.yaml`)
+## 12. Konfigurasi Eksperimen (`config.yaml`, `config.run_a.yaml`, `config.run_b.yaml`)
 
 ## 12.1 Parameter inti
 
@@ -692,8 +717,17 @@ flowchart LR
 - `scheduler`: enabled, type, kwargs
 - `tensorboard`: enabled, log_dir, run_name, flush_secs
 - `hcas_specific`: `lambda_sal`, `image_size`
+- `style_prior`: enable, bobot style loss, style bank source
+- `palette`: enable, bobot palette loss, path metadata JSON / dataset fallback
+- `frequency`: enable, bobot frequency loss, n_bins
+- `sampling.mask_area_curriculum`: kurikulum sampling area mask (small/medium/large)
 - `saliency_model`: backend strategy + mode output
 - `augmentations`: seluruh setelan augmentasi + schedule
+
+Catatan penting v2:
+
+- Run B membutuhkan metadata style terbaru (`scripts/extract_style_metadata.py`).
+- Pastikan `palette.palette_json_path` mengarah ke metadata yang benar, misalnya `./camo/style_metadata/style_metadata.json`.
 
 ## 12.2 Prioritas konfigurasi
 
@@ -714,7 +748,7 @@ flowchart TD
 
 ---
 
-## 13) Proses Percabangan Kritis (Decision Points)
+## 13. Proses Percabangan Kritis (Decision Points)
 
 ## 13.1 Percabangan data
 
@@ -755,15 +789,17 @@ flowchart TD
 
 ---
 
-## 14) Kondisi Saat Ini: Yang Sudah Bisa dan Belum
+## 14. Kondisi Saat Ini: Yang Sudah Bisa dan Belum
 
 ## 14.1 Sudah bisa
 
-- End-to-end training loop GAN + saliency penalty.
+- End-to-end training loop GAN + saliency + optional style/palette/frequency losses.
 - Data loading LabelMe robust untuk kasus umum dataset ini.
 - Resize-aware batching untuk resolusi campuran.
 - Augmentasi sinkron image/mask dengan schedule intensitas.
 - DeepGaze wrapper real + fallback proxy.
+- Ekstraksi style metadata otomatis via `scripts/extract_style_metadata.py`.
+- Logging metrik tambahan (`g_style`, `g_palette`, `g_freq`) untuk eksperimen advanced.
 - Checkpoint save/load/resume + retention.
 - Scheduler config-driven.
 - TensorBoard logging terintegrasi.
@@ -779,7 +815,7 @@ flowchart TD
 
 ---
 
-## 15) Panduan Baca untuk Awam vs Expert
+## 15. Panduan Baca untuk Awam vs Expert
 
 ## 15.1 Jika Anda pembaca awam
 
@@ -804,7 +840,7 @@ Fokus ke:
 
 ---
 
-## 16) Lampiran: Peta File dan Peran
+## 16. Lampiran: Peta File dan Peran
 
 | File | Peran |
 |---|---|
@@ -815,17 +851,23 @@ Fokus ke:
 | `src/models/generator.py` | U-Net generator |
 | `src/models/discriminator.py` | PatchGAN discriminator |
 | `src/models/deepgaze_wrapper.py` | Integrasi saliency backend real/fallback |
-| `src/training/loss.py` | HCAS loss (adv + saliency) |
+| `src/training/loss.py` | HCAS loss komposit (adv + saliency + optional style/palette/frequency) |
+| `src/training/loss_style.py` | Style prior loss berbasis Gram multiscale |
+| `src/training/loss_palette.py` | Palette-constrained loss |
+| `src/training/loss_frequency.py` | Frequency profile matching loss |
+| `src/training/curriculum.py` | Scheduler lambda/curriculum training |
 | `src/training/trainer.py` | Train/val loops dan aggregasi metrics |
 | `src/training/checkpoint.py` | Save/load checkpoint + keep-last-n |
 | `src/training/scheduler.py` | Factory scheduler + helper LR |
 | `src/training/tensorboard.py` | Utility writer TensorBoard |
+| `src/data/mask_area_sampler.py` | Sampler curriculum berdasarkan area mask |
+| `scripts/extract_style_metadata.py` | Ekstraksi metadata style references (JSON + CSV) |
 | `scripts/run_visual_inference.py` | Inference visual dari checkpoint + ekspor pattern flat 1x1 |
 | `inference_outputs/<checkpoint_name>/` | Artefak evaluasi visual dan pattern flat hasil inferensi |
 
 ---
 
-## 17) Update Eksperimen Terbaru: Evaluasi Visual Checkpoint Final
+## 17. Update Eksperimen Terbaru: Evaluasi Visual Checkpoint Final
 
 ### 17.1 Konteks run
 
@@ -866,7 +908,7 @@ Tambahan pipeline ini memungkinkan evaluasi cepat terhadap:
 
 ---
 
-## 18) Penutup
+## 18. Penutup
 
 HCAS-GAN pada repository ini sudah mencapai baseline teknis yang solid untuk eksperimen kamuflase berbasis anti-saliency:
 
@@ -878,3 +920,44 @@ HCAS-GAN pada repository ini sudah mencapai baseline teknis yang solid untuk eks
 Langkah berikutnya yang direkomendasikan adalah standardisasi evaluasi kuantitatif dan penyiapan protokol benchmark agar hasil eksperimen antar-run makin mudah dibandingkan.
 
 > Dokumen ini ditulis sesuai implementasi aktual codebase per Maret 2026.
+
+---
+
+## 19. Strategi Eksperimen v2 Terbaru (Pra-Run B di VAST AI)
+
+Bagian ini merangkum strategi operasional terbaru sebelum memulai Run B di GPU rental.
+
+### 19.1 Definisi run
+
+- **Run A (Baseline):** objective inti (`L_adv + \lambda_{sal}L_sal`), digunakan sebagai pembanding utama.
+- **Run B (Advanced):** Run A + style/palette/frequency losses, dengan konfigurasi `config.run_b.yaml`.
+
+### 19.2 Prasyarat wajib Run B
+
+1. Folder style references sudah rapi (flat folder diperbolehkan): `camo/style_reference_clean/`.
+2. Jalankan ekstraksi metadata style:
+
+    ```bash
+    python scripts/extract_style_metadata.py --input-dir camo/style_reference_clean --output-dir camo/style_metadata
+    ```
+
+3. Verifikasi file output ada:
+    - `camo/style_metadata/style_metadata.json`
+    - `camo/style_metadata/style_domain_map.csv`
+4. Sinkronkan `palette_json_path` di `config.run_b.yaml` ke metadata terbaru.
+
+### 19.3 Urutan eksekusi yang direkomendasikan
+
+1. Jalankan **Run A** sampai stabil (target utama: baseline pembanding).
+2. Jalankan **Run B dari fresh start** untuk evaluasi adil antar-metode.
+3. Bandingkan checkpoint terbaik Run A vs Run B berdasarkan:
+    - visual blending,
+    - stabilitas loss validasi,
+    - metrik saliency,
+    - (opsional) metrik perceptual/SSIM/LPIPS.
+
+### 19.4 Catatan praktis VAST AI
+
+- Gunakan `tmux` agar training tidak berhenti saat SSH putus.
+- Simpan checkpoint/log per run di direktori terpisah (`checkpoints_runA`, `checkpoints_runB`, `runs_runA`, `runs_runB`).
+- Lakukan sanity check dan smoke test sebelum long-run untuk menghindari pemborosan biaya GPU.

@@ -9,6 +9,7 @@ from .dataset_loader import (
 	reproducible_split_indices,
 	split_dataset,
 )
+from .mask_area_sampler import MaskAreaCurriculumSampler
 
 __all__ = [
 	"CamouflageAugmentationPipeline",
@@ -18,5 +19,6 @@ __all__ = [
 	"build_resize_collate_fn",
 	"reproducible_split_indices",
 	"split_dataset",
+	"MaskAreaCurriculumSampler",
 ]
 

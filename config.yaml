@@ -8,7 +8,7 @@ hardware:
   multi_gpu: "auto"
 
 data:
-  annotations_dir: "./camo"
+  annotations_dir: "./camo/environment_annotation"
   annotation_format: "labelme_polygon"
   image_suffix: ".png"
   annotation_suffix: ".json"
@@ -45,6 +45,43 @@ hcas_specific:
   lambda_sal: 15.0
   image_size: 256
   latent_dim: 100
+
+style_prior:
+  enabled: false
+  dataset_dir: "./camo/style_reference_clean"
+  lambda_style: 0.0
+  max_images: 256
+  multiscale: [1.0, 0.5]
+
+palette:
+  enabled: false
+  lambda_palette: 0.0
+  dataset_dir: "./camo/style_reference_clean"
+  palette_json_path: ""
+  n_colors: 6
+
+frequency:
+  enabled: false
+  lambda_freq: 0.0
+  dataset_dir: "./camo/style_reference_clean"
+  n_bins: 32
+
+curriculum:
+  lambda_sal:
+    enabled: false
+    mode: "linear"  # linear | cosine | step
+    start: 2.0
+    end: 15.0
+    warmup_epochs: 100
+
+sampling:
+  mask_area_curriculum:
+    enabled: false
+    small_threshold: 0.08
+    medium_threshold: 0.20
+    start_weights: [0.2, 0.5, 0.3]
+    end_weights: [0.1, 0.3, 0.6]
+    curriculum_epochs: 300
 
 saliency_model:
   backend: "auto"                 # auto | deepgazeiii_torchhub | proxy

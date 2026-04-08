@@ -17,6 +17,7 @@ import yaml
 from src.data import (
     DatasetConfig,
     LabelMeCamouflageDataset,
+    MaskAreaCurriculumSampler,
     build_augmentations,
     build_resize_collate_fn,
     split_dataset,
@@ -25,7 +26,11 @@ from src.models.deepgaze_wrapper import DeepGazeWrapper
 from src.models.discriminator import PatchDiscriminator
 from src.models.generator import GeneratorUNet
 from src.training.checkpoint import CheckpointManager
+from src.training.curriculum import build_lambda_scheduler
+from src.training.loss_frequency import FrequencyLoss
 from src.training.loss import HCASLoss
+from src.training.loss_palette import PaletteLoss
+from src.training.loss_style import StylePriorLoss
 from src.training.scheduler import build_scheduler, get_learning_rate, step_scheduler
 from src.training.tensorboard import build_summary_writer
 from src.training.trainer import train_one_epoch, validate_one_epoch
@@ -152,6 +157,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
+    def _resolve_path_like(value: str | None) -> str:
+        if value is None:
+            return ""
+        s = str(value).strip()
+        if not s:
+            return ""
+        p = Path(s)
+        if not p.is_absolute():
+            p = (root / p).resolve()
+        return str(p)
+
     config = load_config((root / args.config).resolve())
 
     print(f"[HCAS-GAN] Experiment: {config['experiment']['name']}")
@@ -236,6 +252,29 @@ def main() -> None:
         pin_memory=(device.type == "cuda"),
         collate_fn=train_collate_fn,
     )
+
+    sampling_cfg = config.get("sampling", {}).get("mask_area_curriculum", {})
+    area_sampler_enabled = bool(sampling_cfg.get("enabled", False))
+    area_sampler: MaskAreaCurriculumSampler | None = None
+    if area_sampler_enabled:
+        area_sampler = MaskAreaCurriculumSampler(
+            train_subset=train_set,
+            small_threshold=float(sampling_cfg.get("small_threshold", 0.08)),
+            medium_threshold=float(sampling_cfg.get("medium_threshold", 0.2)),
+            start_weights=tuple(sampling_cfg.get("start_weights", [0.2, 0.5, 0.3])),
+            end_weights=tuple(sampling_cfg.get("end_weights", [0.1, 0.3, 0.6])),
+            curriculum_epochs=int(sampling_cfg.get("curriculum_epochs", max(1, total_epochs // 2))),
+            seed=seed,
+        )
+        train_loader = DataLoader(
+            train_set,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=area_sampler,
+            num_workers=num_workers,
+            pin_memory=(device.type == "cuda"),
+            collate_fn=train_collate_fn,
+        )
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
@@ -286,7 +325,48 @@ def main() -> None:
     if saliency_info.using_fallback and saliency_info.fallback_reason:
         print(f"[HCAS-GAN] Saliency fallback reason: {saliency_info.fallback_reason}")
 
-    criterion = HCASLoss(lambda_sal=float(config.get("hcas_specific", {}).get("lambda_sal", 15.0)))
+    style_cfg = config.get("style_prior", {})
+    palette_cfg = config.get("palette", {})
+    freq_cfg = config.get("frequency", {})
+
+    style_loss = StylePriorLoss(
+        enabled=bool(style_cfg.get("enabled", False)),
+        dataset_dir=_resolve_path_like(style_cfg.get("dataset_dir", "")),
+        image_size=image_size,
+        max_images=int(style_cfg.get("max_images", 256)),
+        multiscale=tuple(style_cfg.get("multiscale", [1.0, 0.5])),
+    )
+    palette_loss = PaletteLoss(
+        enabled=bool(palette_cfg.get("enabled", False)),
+        palette_json_path=_resolve_path_like(palette_cfg.get("palette_json_path", "")) or None,
+        dataset_dir=_resolve_path_like(palette_cfg.get("dataset_dir", "")) or None,
+        n_colors=int(palette_cfg.get("n_colors", 6)),
+    )
+    frequency_loss = FrequencyLoss(
+        enabled=bool(freq_cfg.get("enabled", False)),
+        dataset_dir=_resolve_path_like(freq_cfg.get("dataset_dir", "")) or None,
+        image_size=image_size,
+        n_bins=int(freq_cfg.get("n_bins", 32)),
+    )
+
+    criterion = HCASLoss(
+        lambda_sal=float(config.get("hcas_specific", {}).get("lambda_sal", 15.0)),
+        lambda_style=float(style_cfg.get("lambda_style", 0.0)),
+        lambda_palette=float(palette_cfg.get("lambda_palette", 0.0)),
+        lambda_freq=float(freq_cfg.get("lambda_freq", 0.0)),
+        style_loss=style_loss,
+        palette_loss=palette_loss,
+        frequency_loss=frequency_loss,
+    )
+
+    curriculum_cfg = config.get("curriculum", {}).get("lambda_sal", {})
+    lambda_sal_scheduler = build_lambda_scheduler(
+        enabled=bool(curriculum_cfg.get("enabled", False)),
+        mode=str(curriculum_cfg.get("mode", "linear")),
+        start_value=float(curriculum_cfg.get("start", criterion.lambda_sal)),
+        end_value=float(curriculum_cfg.get("end", criterion.lambda_sal)),
+        warmup_epochs=int(curriculum_cfg.get("warmup_epochs", max(1, total_epochs // 5))),
+    )
     optimizer_g = torch.optim.Adam(
         generator.parameters(),
         lr=float(config["hyperparameters"].get("learning_rate_G", 2e-4)),
@@ -381,10 +461,21 @@ def main() -> None:
         f"[HCAS-GAN] Dataset split: train={len(train_set)} val={len(val_set)} test={len(test_set)} "
         f"| image_size={image_size} | batch_size={batch_size} | epochs={total_epochs}"
     )
+    print(
+        f"[HCAS-GAN] Extra losses: style={'on' if style_loss.is_ready else 'off'} "
+        f"palette={'on' if palette_loss.is_ready else 'off'} "
+        f"frequency={'on' if frequency_loss.is_ready else 'off'}"
+    )
+    if area_sampler is not None:
+        print("[HCAS-GAN] Mask-area curriculum sampler: enabled")
 
     for epoch in range(start_epoch, total_epochs + 1):
+        criterion.lambda_sal = float(lambda_sal_scheduler.value(epoch))
+
         if train_augmenter is not None and hasattr(train_augmenter, "set_epoch"):
             train_augmenter.set_epoch(epoch)
+        if area_sampler is not None:
+            area_sampler.set_epoch(epoch)
 
         aug_strength = None
         if train_augmenter is not None and hasattr(train_augmenter, "get_strength_factor"):
@@ -421,7 +512,7 @@ def main() -> None:
             f"[epoch {epoch}/{total_epochs}] "
             f"train_g={train_metrics.g_total:.4f} train_d={train_metrics.d_total:.4f} "
             f"val_g={val_metrics.g_total:.4f} val_d={val_metrics.d_total:.4f} "
-            f"lr_g={lr_g:.6f} lr_d={lr_d:.6f}{aug_part}"
+            f"lr_g={lr_g:.6f} lr_d={lr_d:.6f} lambda_sal={criterion.lambda_sal:.4f}{aug_part}"
         )
 
         if writer is not None:
@@ -429,14 +520,26 @@ def main() -> None:
             writer.add_scalar("loss/train/d_total", train_metrics.d_total, epoch)
             writer.add_scalar("loss/train/g_adv", train_metrics.g_adv, epoch)
             writer.add_scalar("loss/train/g_sal", train_metrics.g_sal, epoch)
+            writer.add_scalar("loss/train/g_style", train_metrics.g_style, epoch)
+            writer.add_scalar("loss/train/g_palette", train_metrics.g_palette, epoch)
+            writer.add_scalar("loss/train/g_freq", train_metrics.g_freq, epoch)
             writer.add_scalar("loss/val/g_total", val_metrics.g_total, epoch)
             writer.add_scalar("loss/val/d_total", val_metrics.d_total, epoch)
             writer.add_scalar("loss/val/g_adv", val_metrics.g_adv, epoch)
             writer.add_scalar("loss/val/g_sal", val_metrics.g_sal, epoch)
+            writer.add_scalar("loss/val/g_style", val_metrics.g_style, epoch)
+            writer.add_scalar("loss/val/g_palette", val_metrics.g_palette, epoch)
+            writer.add_scalar("loss/val/g_freq", val_metrics.g_freq, epoch)
+            writer.add_scalar("loss/lambda_sal", criterion.lambda_sal, epoch)
             writer.add_scalar("lr/g", lr_g, epoch)
             writer.add_scalar("lr/d", lr_d, epoch)
             if aug_strength is not None:
                 writer.add_scalar("augmentation/strength", aug_strength, epoch)
+            if area_sampler is not None:
+                stats = area_sampler.get_bucket_stats()
+                writer.add_scalar("sampling/small_ratio", stats["small_ratio"], epoch)
+                writer.add_scalar("sampling/medium_ratio", stats["medium_ratio"], epoch)
+                writer.add_scalar("sampling/large_ratio", stats["large_ratio"], epoch)
             writer.add_scalar("timing/train_epoch_sec", train_metrics.duration_sec, epoch)
             writer.add_scalar("timing/val_epoch_sec", val_metrics.duration_sec, epoch)
 
@@ -458,6 +561,13 @@ def main() -> None:
                     "lr_g": lr_g,
                     "lr_d": lr_d,
                     "augmentation_strength": aug_strength,
+                    "lambda_sal": criterion.lambda_sal,
+                    "train_g_style": train_metrics.g_style,
+                    "train_g_palette": train_metrics.g_palette,
+                    "train_g_freq": train_metrics.g_freq,
+                    "val_g_style": val_metrics.g_style,
+                    "val_g_palette": val_metrics.g_palette,
+                    "val_g_freq": val_metrics.g_freq,
                 },
             )
             print(f"[HCAS-GAN] Checkpoint saved: {ckpt_path.name}")

@@ -95,7 +95,12 @@ def main() -> None:
     disc_pred = discriminator(composite)
     saliency_map = saliency(composite)
 
-    total_g, loss_adv, loss_sal = criterion.generator_loss(disc_pred, saliency_map, mask)
+    total_g, loss_adv, loss_sal, loss_style, loss_palette, loss_freq = criterion.generator_loss(
+        disc_pred,
+        saliency_map,
+        mask,
+        fake_pattern=fake_pattern,
+    )
     total_g.backward()
     g_grad_total = grad_norm(generator)
 
@@ -113,6 +118,9 @@ def main() -> None:
     print(f"device={device}")
     print(f"loss_adv={float(loss_adv.item()):.6f}")
     print(f"loss_sal={float(loss_sal.item()):.6f}")
+    print(f"loss_style={float(loss_style.item()):.6f}")
+    print(f"loss_palette={float(loss_palette.item()):.6f}")
+    print(f"loss_freq={float(loss_freq.item()):.6f}")
     print(f"total_g={float(total_g.item()):.6f}")
     print(f"generator_grad_total={g_grad_total:.6f}")
     print(f"generator_grad_saliency_only={g_grad_sal:.6f}")

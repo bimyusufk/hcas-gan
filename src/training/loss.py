@@ -10,15 +10,35 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .loss_frequency import FrequencyLoss
+from .loss_palette import PaletteLoss
+from .loss_style import StylePriorLoss
+
 
 class HCASLoss(nn.Module):
     """Composite loss for HCAS-GAN training."""
 
-    def __init__(self, lambda_sal: float = 15.0, eps: float = 1e-8):
+    def __init__(
+        self,
+        lambda_sal: float = 15.0,
+        lambda_style: float = 0.0,
+        lambda_palette: float = 0.0,
+        lambda_freq: float = 0.0,
+        style_loss: StylePriorLoss | None = None,
+        palette_loss: PaletteLoss | None = None,
+        frequency_loss: FrequencyLoss | None = None,
+        eps: float = 1e-8,
+    ):
         super().__init__()
         self.lambda_sal = float(lambda_sal)
+        self.lambda_style = float(lambda_style)
+        self.lambda_palette = float(lambda_palette)
+        self.lambda_freq = float(lambda_freq)
         self.eps = float(eps)
         self.adversarial_loss = nn.BCEWithLogitsLoss()
+        self.style_loss = style_loss
+        self.palette_loss = palette_loss
+        self.frequency_loss = frequency_loss
 
     def compute_saliency_penalty(
         self,
@@ -52,7 +72,8 @@ class HCASLoss(nn.Module):
         discriminator_pred: torch.Tensor,
         saliency_map: torch.Tensor,
         mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        fake_pattern: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute generator objective.
 
         L_G = L_adv + lambda_sal * L_sal
@@ -61,8 +82,28 @@ class HCASLoss(nn.Module):
         loss_adv = self.adversarial_loss(discriminator_pred, valid_labels)
 
         loss_sal, _ = self.compute_saliency_penalty(saliency_map, mask)
-        total_g_loss = loss_adv + (self.lambda_sal * loss_sal)
-        return total_g_loss, loss_adv, loss_sal
+
+        zero = torch.zeros((), device=discriminator_pred.device, dtype=discriminator_pred.dtype)
+        loss_style = zero
+        loss_palette = zero
+        loss_freq = zero
+
+        if fake_pattern is not None:
+            if self.style_loss is not None and self.lambda_style > 0.0:
+                loss_style = self.style_loss(fake_pattern=fake_pattern, mask=mask)
+            if self.palette_loss is not None and self.lambda_palette > 0.0:
+                loss_palette = self.palette_loss(fake_pattern=fake_pattern, mask=mask)
+            if self.frequency_loss is not None and self.lambda_freq > 0.0:
+                loss_freq = self.frequency_loss(fake_pattern=fake_pattern, mask=mask)
+
+        total_g_loss = (
+            loss_adv
+            + (self.lambda_sal * loss_sal)
+            + (self.lambda_style * loss_style)
+            + (self.lambda_palette * loss_palette)
+            + (self.lambda_freq * loss_freq)
+        )
+        return total_g_loss, loss_adv, loss_sal, loss_style, loss_palette, loss_freq
 
     def discriminator_loss(
         self,

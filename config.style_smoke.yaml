@@ -1,5 +1,5 @@
 experiment:
-  name: "HCAS_GAN_CPU_SMOKE"
+  name: "HCAS_GAN_STYLE_SMOKE"
   seed: 42
 
 hardware:
@@ -37,45 +37,45 @@ scheduler:
 tensorboard:
   enabled: false
   log_dir: "./runs_smoke"
-  run_name: "cpu_smoke"
+  run_name: "style_smoke"
   flush_secs: 30
 
 hcas_specific:
-  lambda_sal: 15.0
+  lambda_sal: 10.0
   image_size: 256
   latent_dim: 100
 
 style_prior:
-  enabled: false
+  enabled: true
   dataset_dir: "./camo/style_reference_clean"
-  lambda_style: 0.0
+  lambda_style: 0.5
   max_images: 64
   multiscale: [1.0, 0.5]
 
 palette:
-  enabled: false
-  lambda_palette: 0.0
+  enabled: true
+  lambda_palette: 0.2
   dataset_dir: "./camo/style_reference_clean"
-  palette_json_path: ""
-  n_colors: 5
+  palette_json_path: "./camo/style_metadata/style_metadata.json"
+  n_colors: 6
 
 frequency:
-  enabled: false
-  lambda_freq: 0.0
+  enabled: true
+  lambda_freq: 0.1
   dataset_dir: "./camo/style_reference_clean"
   n_bins: 24
 
 curriculum:
   lambda_sal:
-    enabled: false
+    enabled: true
     mode: "linear"
     start: 2.0
-    end: 15.0
-    warmup_epochs: 10
+    end: 10.0
+    warmup_epochs: 5
 
 sampling:
   mask_area_curriculum:
-    enabled: false
+    enabled: true
     small_threshold: 0.08
     medium_threshold: 0.20
     start_weights: [0.2, 0.5, 0.3]

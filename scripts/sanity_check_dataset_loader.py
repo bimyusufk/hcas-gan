@@ -17,7 +17,7 @@ from src.data.dataset_loader import DatasetConfig, LabelMeCamouflageDataset, spl
 def main() -> None:
     dataset = LabelMeCamouflageDataset(
         DatasetConfig(
-            annotations_dir=str(PROJECT_ROOT / "camo"),
+            annotations_dir=str(PROJECT_ROOT / "camo/environment_annotation" ),
             target_label="camou",
             ignore_labels=("skin",),
             strict_non_empty_mask=True,
@@ -26,9 +26,11 @@ def main() -> None:
 
     train_set, val_set, test_set = split_dataset(dataset, val_ratio=0.1, test_ratio=0.1, seed=42)
 
-    sample = dataset[0]
+    sample = dataset[99]
     image = sample["image"]
     mask = sample["mask"]
+
+    print(sample.keys())
 
     assert isinstance(image, torch.Tensor)
     assert isinstance(mask, torch.Tensor)
@@ -36,6 +38,7 @@ def main() -> None:
     assert mask.ndim == 3 and mask.shape[0] == 1
     assert torch.sum(mask) > 0, "Mask should not be empty"
 
+    print("\n=== DATASET SANITY CHECK ===")
     print(f"dataset_size={len(dataset)}")
     print(f"train_size={len(train_set)} val_size={len(val_set)} test_size={len(test_set)}")
     print(f"image_shape={tuple(image.shape)} mask_shape={tuple(mask.shape)}")
