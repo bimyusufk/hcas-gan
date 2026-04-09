@@ -6,7 +6,7 @@ hardware:
   num_workers: 8
   multi_gpu: auto
 data:
-  annotations_dir: ./camo
+  annotations_dir: ./camo/environment_annotation
   annotation_format: labelme_polygon
   image_suffix: .png
   annotation_suffix: .json
