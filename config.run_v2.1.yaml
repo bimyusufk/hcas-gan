@@ -38,7 +38,7 @@ tensorboard:
   flush_secs: 30
 hcas_specific:
   lambda_sal: 10.0
-  image_size: 1024
+  image_size: 512
   latent_dim: 100
 style_prior:
   enabled: true
