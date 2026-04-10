@@ -19,8 +19,8 @@ hyperparameters:
   learning_rate_D: 0.0002
   beta1: 0.5
   beta2: 0.999
-  batch_size: 16
-  epochs: 500
+  batch_size: 32
+  epochs: 1000
 checkpoint:
   dir: ./checkpoints
   interval: 5
