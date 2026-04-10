@@ -58,7 +58,7 @@ frequency:
   lambda_freq: 3.0
   dataset_dir: ./camo/style_references_woodland_brushstroke
 curriculum:
-  enabled: true
+  enabled: false
   schedule_type: linear
   start_epoch: 0
   end_epoch: 350
