@@ -137,7 +137,7 @@ def main() -> None:
         for name in rel_names:
             mapping_rows.append({"file": name, "domain": domain})
 
-    metadata_path = output_dir / "style_metadata.json"
+    metadata_path = output_dir / "style_metadata_.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     mapping_path = output_dir / "style_domain_map.csv"

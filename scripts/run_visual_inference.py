@@ -14,6 +14,7 @@ import sys
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Subset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +82,18 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=3.0,
         help="Gaussian sigma for mask feathering.",
+    )
+    parser.add_argument(
+        "--input-pad",
+        type=int,
+        default=16,
+        help="Reflect padding (pixels) applied to generator input to reduce border artifacts.",
+    )
+    parser.add_argument(
+        "--edge-crop",
+        type=int,
+        default=8,
+        help="Crop border (pixels) from generator output and resize back to suppress frame-like edges.",
     )
     parser.add_argument(
         "--output-dir",
@@ -197,6 +210,41 @@ def _extract_center_tile(pattern: torch.Tensor, tile_size: int) -> torch.Tensor:
     y0 = (h - t) // 2
     x0 = (w - t) // 2
     return pattern[:, :, y0 : y0 + t, x0 : x0 + t]
+
+
+def _reflect_pad_nchw(x: torch.Tensor, pad: int) -> torch.Tensor:
+    p = max(0, int(pad))
+    if p <= 0:
+        return x
+    h, w = int(x.shape[2]), int(x.shape[3])
+    max_p = max(0, (min(h, w) // 2) - 1)
+    p = min(p, max_p)
+    if p <= 0:
+        return x
+    return F.pad(x, (p, p, p, p), mode="reflect")
+
+
+def _remove_nchw_pad(x: torch.Tensor, pad: int) -> torch.Tensor:
+    p = max(0, int(pad))
+    if p <= 0:
+        return x
+    h, w = int(x.shape[2]), int(x.shape[3])
+    if (h - (2 * p)) < 2 or (w - (2 * p)) < 2:
+        return x
+    return x[:, :, p : h - p, p : w - p]
+
+
+def _edge_crop_and_resize_nchw(x: torch.Tensor, crop: int) -> torch.Tensor:
+    c = max(0, int(crop))
+    if c <= 0:
+        return x
+    h, w = int(x.shape[2]), int(x.shape[3])
+    if (h - (2 * c)) < 8 or (w - (2 * c)) < 8:
+        return x
+    cropped = x[:, :, c : h - c, c : w - c]
+    if cropped.shape[2:] == x.shape[2:]:
+        return cropped
+    return F.interpolate(cropped, size=(h, w), mode="bilinear", align_corners=False)
 
 
 def _tile_to_canvas(
@@ -379,7 +427,14 @@ def main() -> None:
     masks = batch["mask"].to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        patterns_direct = generator(images)
+        input_pad = max(0, int(args.input_pad))
+        edge_crop = max(0, int(args.edge_crop))
+
+        images_for_gen = _reflect_pad_nchw(images, input_pad)
+        patterns_padded = generator(images_for_gen)
+        patterns_direct = _remove_nchw_pad(patterns_padded, input_pad)
+        patterns_direct = _edge_crop_and_resize_nchw(patterns_direct, edge_crop)
+
         if args.compose_mode == "tile":
             tile_sources = _extract_center_tile(patterns_direct, int(args.tile_size))
             patterns_used = _tile_to_canvas(
@@ -446,7 +501,8 @@ def main() -> None:
         f"[visual inference] split={args.split} samples={n} skipped={skipped} "
         f"device={device} compose_mode={args.compose_mode} tile_size={int(args.tile_size)} "
         f"random_tiling={(not bool(args.no_random_tiling))} color_match={(not bool(args.no_color_match))} "
-        f"feather_kernel={int(args.feather_kernel)} feather_sigma={float(args.feather_sigma):.2f}"
+        f"feather_kernel={int(args.feather_kernel)} feather_sigma={float(args.feather_sigma):.2f} "
+        f"input_pad={int(args.input_pad)} edge_crop={int(args.edge_crop)}"
     )
     print(f"[visual inference] comparison={comparison_path}")
     print(f"[visual inference] pattern_flat_1x1={pattern_flat_path}")

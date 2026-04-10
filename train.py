@@ -102,6 +102,60 @@ def maybe_wrap_data_parallel(model: nn.Module, use_multi_gpu: bool, gpu_count: i
     return model
 
 
+def _resolve_path_like(value: str | None, root: Path) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    p = Path(s)
+    if not p.is_absolute():
+        p = (root / p).resolve()
+    return str(p)
+
+
+def apply_cli_overrides(config: dict, args: argparse.Namespace, root: Path) -> dict:
+    data_cfg = dict(config.get("data", {}) or {})
+    style_cfg = dict(config.get("style_prior", {}) or {})
+    palette_cfg = dict(config.get("palette", {}) or {})
+    freq_cfg = dict(config.get("frequency", {}) or {})
+    hcas_cfg = dict(config.get("hcas_specific", {}) or {})
+    curriculum_cfg = dict(config.get("curriculum", {}) or {})
+    lambda_sal_cfg = dict(curriculum_cfg.get("lambda_sal", {}) or {})
+
+    if getattr(args, "annotations_dir", None) is not None:
+        data_cfg["annotations_dir"] = _resolve_path_like(args.annotations_dir, root)
+    if getattr(args, "style_dataset_dir", None) is not None:
+        style_cfg["dataset_dir"] = _resolve_path_like(args.style_dataset_dir, root)
+    if getattr(args, "palette_dataset_dir", None) is not None:
+        palette_cfg["dataset_dir"] = _resolve_path_like(args.palette_dataset_dir, root)
+    if getattr(args, "frequency_dataset_dir", None) is not None:
+        freq_cfg["dataset_dir"] = _resolve_path_like(args.frequency_dataset_dir, root)
+    if getattr(args, "palette_json_path", None) is not None:
+        palette_cfg["palette_json_path"] = _resolve_path_like(args.palette_json_path, root)
+
+    if getattr(args, "lambda_sal", None) is not None:
+        lambda_sal_value = float(args.lambda_sal)
+        hcas_cfg["lambda_sal"] = lambda_sal_value
+        lambda_sal_cfg["start"] = lambda_sal_value
+        lambda_sal_cfg["end"] = lambda_sal_value
+    if getattr(args, "lambda_style", None) is not None:
+        style_cfg["lambda_style"] = float(args.lambda_style)
+    if getattr(args, "lambda_palette", None) is not None:
+        palette_cfg["lambda_palette"] = float(args.lambda_palette)
+    if getattr(args, "lambda_freq", None) is not None:
+        freq_cfg["lambda_freq"] = float(args.lambda_freq)
+
+    config["data"] = data_cfg
+    config["style_prior"] = style_cfg
+    config["palette"] = palette_cfg
+    config["frequency"] = freq_cfg
+    config["hcas_specific"] = hcas_cfg
+    curriculum_cfg["lambda_sal"] = lambda_sal_cfg
+    config["curriculum"] = curriculum_cfg
+    return config
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train HCAS-GAN")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config YAML")
@@ -151,24 +205,69 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="TensorBoard base log directory (overrides config.tensorboard.log_dir)",
     )
+    parser.add_argument(
+        "--annotations-dir",
+        type=str,
+        default=None,
+        help="Override config.data.annotations_dir (environment annotation dataset)",
+    )
+    parser.add_argument(
+        "--style-dataset-dir",
+        type=str,
+        default=None,
+        help="Override config.style_prior.dataset_dir",
+    )
+    parser.add_argument(
+        "--palette-dataset-dir",
+        type=str,
+        default=None,
+        help="Override config.palette.dataset_dir",
+    )
+    parser.add_argument(
+        "--frequency-dataset-dir",
+        type=str,
+        default=None,
+        help="Override config.frequency.dataset_dir",
+    )
+    parser.add_argument(
+        "--palette-json-path",
+        type=str,
+        default=None,
+        help="Override config.palette.palette_json_path",
+    )
+    parser.add_argument(
+        "--lambda-sal",
+        type=float,
+        default=None,
+        help="Override config.hcas_specific.lambda_sal",
+    )
+    parser.add_argument(
+        "--lambda-style",
+        type=float,
+        default=None,
+        help="Override config.style_prior.lambda_style",
+    )
+    parser.add_argument(
+        "--lambda-palette",
+        type=float,
+        default=None,
+        help="Override config.palette.lambda_palette",
+    )
+    parser.add_argument(
+        "--lambda-freq",
+        type=float,
+        default=None,
+        help="Override config.frequency.lambda_freq",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
-    def _resolve_path_like(value: str | None) -> str:
-        if value is None:
-            return ""
-        s = str(value).strip()
-        if not s:
-            return ""
-        p = Path(s)
-        if not p.is_absolute():
-            p = (root / p).resolve()
-        return str(p)
 
     config = load_config((root / args.config).resolve())
+    config = apply_cli_overrides(config, args, root)
 
     print(f"[HCAS-GAN] Experiment: {config['experiment']['name']}")
 
@@ -215,7 +314,7 @@ def main() -> None:
         tensorboard_run_name = str(run_name_cfg)
 
     dataset_cfg = DatasetConfig(
-        annotations_dir=str((root / config["data"]["annotations_dir"]).resolve()),
+        annotations_dir=_resolve_path_like(config["data"]["annotations_dir"], root),
         image_suffix=str(config["data"].get("image_suffix", ".png")),
         annotation_suffix=str(config["data"].get("annotation_suffix", ".json")),
         target_label=str(config["data"].get("target_label", "camou")),
@@ -331,20 +430,20 @@ def main() -> None:
 
     style_loss = StylePriorLoss(
         enabled=bool(style_cfg.get("enabled", False)),
-        dataset_dir=_resolve_path_like(style_cfg.get("dataset_dir", "")),
+        dataset_dir=_resolve_path_like(style_cfg.get("dataset_dir", ""), root),
         image_size=image_size,
         max_images=int(style_cfg.get("max_images", 256)),
         multiscale=tuple(style_cfg.get("multiscale", [1.0, 0.5])),
     )
     palette_loss = PaletteLoss(
         enabled=bool(palette_cfg.get("enabled", False)),
-        palette_json_path=_resolve_path_like(palette_cfg.get("palette_json_path", "")) or None,
-        dataset_dir=_resolve_path_like(palette_cfg.get("dataset_dir", "")) or None,
+        palette_json_path=_resolve_path_like(palette_cfg.get("palette_json_path", ""), root) or None,
+        dataset_dir=_resolve_path_like(palette_cfg.get("dataset_dir", ""), root) or None,
         n_colors=int(palette_cfg.get("n_colors", 6)),
     )
     frequency_loss = FrequencyLoss(
         enabled=bool(freq_cfg.get("enabled", False)),
-        dataset_dir=_resolve_path_like(freq_cfg.get("dataset_dir", "")) or None,
+        dataset_dir=_resolve_path_like(freq_cfg.get("dataset_dir", ""), root) or None,
         image_size=image_size,
         n_bins=int(freq_cfg.get("n_bins", 32)),
     )

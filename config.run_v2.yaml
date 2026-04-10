@@ -1,12 +1,12 @@
 experiment:
-  name: HCAS_GAN_RunA_Baseline
+  name: HCAS_GAN_Run_v2.1_Advanced
   seed: 42
 hardware:
   device: auto
   num_workers: 8
   multi_gpu: auto
 data:
-  annotations_dir: ./camo
+  annotations_dir: ./camo/environment_annotation
   annotation_format: labelme_polygon
   image_suffix: .png
   annotation_suffix: .json
@@ -19,10 +19,10 @@ hyperparameters:
   learning_rate_D: 0.0002
   beta1: 0.5
   beta2: 0.999
-  batch_size: 16
+  batch_size: 32
   epochs: 1000
 checkpoint:
-  dir: ./checkpoints_runA
+  dir: ./checkpoints
   interval: 5
   keep_last_n: 3
   resume_from: null
@@ -33,39 +33,39 @@ scheduler:
     eta_min: 0.0
 tensorboard:
   enabled: true
-  log_dir: ./runs_runA
+  log_dir: ./runs_runB
   run_name: null
   flush_secs: 30
 hcas_specific:
   lambda_sal: 15.0
-  image_size: 256
+  image_size: 1024
   latent_dim: 100
 style_prior:
-  enabled: false
+  enabled: true
   dataset_dir: ./camo/style_reference_clean
-  lambda_style: 0.0
+  lambda_style: 2.0
   max_images: 256
   multiscale:
   - 1.0
   - 0.5
 palette:
-  enabled: false
-  lambda_palette: 0.0
+  enabled: true
+  lambda_palette: 1.5
   dataset_dir: ./camo/style_reference_clean
-  palette_json_path: ''
+  palette_json_path: ./camo/style_metadata/style_metadata.json
 frequency:
-  enabled: false
-  lambda_freq: 0.0
+  enabled: true
+  lambda_freq: 1.5
   dataset_dir: ./camo/style_reference_clean
 curriculum:
-  enabled: false
+  enabled: true
   schedule_type: linear
   start_epoch: 0
   end_epoch: 1000
-  p_small_start: 0.33
-  p_small_end: 0.33
-  p_large_start: 0.33
-  p_large_end: 0.33
+  p_small_start: 0.7
+  p_small_end: 0.1
+  p_large_start: 0.1
+  p_large_end: 0.7
 sampling:
   mask_area_curriculum:
     enabled: false

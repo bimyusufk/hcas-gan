@@ -1,5 +1,5 @@
 experiment:
-  name: HCAS_GAN_RunB_Advanced
+  name: HCAS_GAN_Run_v2_Advanced
   seed: 42
 hardware:
   device: auto
@@ -37,31 +37,31 @@ tensorboard:
   run_name: null
   flush_secs: 30
 hcas_specific:
-  lambda_sal: 15.0
-  image_size: 256
+  lambda_sal: 10.0
+  image_size: 1024
   latent_dim: 100
 style_prior:
   enabled: true
-  dataset_dir: ./camo/style_reference_clean
-  lambda_style: 2.0
+  dataset_dir: ./camo/style_references_woodland_brushstroke
+  lambda_style: 8.0
   max_images: 256
   multiscale:
   - 1.0
   - 0.5
 palette:
   enabled: true
-  lambda_palette: 1.5
-  dataset_dir: ./camo/style_reference_clean
-  palette_json_path: ./camo/style_metadata/style_metadata.json
+  lambda_palette: 4.0
+  dataset_dir: ./camo/style_references_woodland_brushstroke
+  palette_json_path: ./camo/style_references_woodland_brushstroke/style_metadata_style_references_woodland_brushstroke.json
 frequency:
   enabled: true
-  lambda_freq: 1.5
-  dataset_dir: ./camo/style_reference_clean
+  lambda_freq: 3.0
+  dataset_dir: ./camo/style_references_woodland_brushstroke
 curriculum:
   enabled: true
   schedule_type: linear
   start_epoch: 0
-  end_epoch: 1000
+  end_epoch: 350
   p_small_start: 0.7
   p_small_end: 0.1
   p_large_start: 0.1

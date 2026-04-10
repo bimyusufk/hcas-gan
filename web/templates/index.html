@@ -8,93 +8,104 @@
 </head>
 <body>
   <main class="container">
-    <h1>HCAS-GAN Web Inference</h1>
+    <h1>HCAS-GAN Web Inference (Multi-Model Compare)</h1>
     <p class="meta">
-      Checkpoint: <code>{{ checkpoint_name }}</code> · Device: <code>{{ device }}</code> · Model size: <code>{{ image_size }}x{{ image_size }}</code>
+      Default checkpoint: <code>{{ checkpoint_name }}</code> · Model size: <code>{{ image_size }}x{{ image_size }}</code> · Default device: <code>{{ default_device_policy }}</code>
     </p>
 
     <section class="card">
-      <h2>1) Upload gambar lingkungan</h2>
-      <input id="imageInput" type="file" accept="image/*" />
-      <div class="upload-row">
-        <label class="hint" for="annotationInput">Upload JSON anotasi (opsional)</label>
-        <input id="annotationInput" type="file" accept="application/json,.json" />
+      <h2>1) Pilih gambar latar belakang</h2>
+      <div class="toolbar">
+        <label>
+          Environment image
+          <select id="sampleSelect"></select>
+        </label>
+        <button id="refreshSamplesBtn" type="button">Refresh samples</button>
       </div>
-      <p class="hint">Upload gambar, lalu klik titik-titik polygon pada canvas untuk anotasi camou. Kamu juga bisa impor titik dari file JSON.</p>
+      <p class="hint">Sumber gambar diambil dari folder environment annotation sesuai config.</p>
+      <div class="preview-panel">
+        <figure>
+          <figcaption>Background</figcaption>
+          <img id="selectedBackgroundPreview" alt="selected background" />
+        </figure>
+      </div>
     </section>
 
     <section class="card">
-      <h2>2) Anotasi area camou</h2>
+      <h2>2) Pilih annotation dari gambar tersebut</h2>
       <div class="toolbar">
         <label>
-          Mode
+          Annotation polygon
+          <select id="annotationSelect"></select>
+        </label>
+        <button id="refreshAnnotationsBtn" type="button">Refresh annotations</button>
+      </div>
+      <p class="hint">Annotation yang muncul adalah polygon target (`camou`) dari file JSON terpilih.</p>
+    </section>
+
+    <section class="card">
+      <h2>3) Pilih tile size dan device</h2>
+      <div class="toolbar">
+        <label>
+          Device
+          <select id="deviceSelect">
+            <option value="auto" {% if default_device_policy == 'auto' %}selected{% endif %}>auto</option>
+            <option value="cuda" {% if default_device_policy == 'cuda' %}selected{% endif %}>cuda</option>
+            <option value="cpu" {% if default_device_policy == 'cpu' %}selected{% endif %}>cpu</option>
+          </select>
+        </label>
+        <label>
+          Compose mode
           <select id="composeMode">
-            <option value="tile" {% if compose_mode == 'tile' %}selected{% endif %}>tile (pattern 1x1 -> tempel mask)</option>
-            <option value="direct" {% if compose_mode == 'direct' %}selected{% endif %}>direct (legacy full-image)</option>
+            <option value="tile" {% if compose_mode == 'tile' %}selected{% endif %}>tile</option>
+            <option value="direct" {% if compose_mode == 'direct' %}selected{% endif %}>direct</option>
           </select>
         </label>
         <label>
           Tile size
           <input id="tileSize" type="number" min="4" step="1" value="{{ tile_size }}" />
         </label>
-        <div class="zoom-controls">
-          <button id="zoomOutBtn" type="button">Zoom -</button>
-          <button id="zoomResetBtn" type="button">Reset Zoom</button>
-          <button id="zoomInBtn" type="button">Zoom +</button>
-          <span id="zoomLabel" class="hint">100%</span>
-        </div>
-        <button id="closePolygonBtn" type="button">Tutup Polygon</button>
-        <button id="clearBtn" type="button">Clear</button>
-        <button id="inferBtn" type="button" class="primary">3) Run Inference</button>
       </div>
-      <div class="canvas-wrap" id="canvasWrap">
-        <canvas id="canvas"></canvas>
-      </div>
-      <p id="status" class="status">Belum ada gambar.</p>
     </section>
 
     <section class="card">
-      <h2>Hasil Inference</h2>
-      <div class="grid4">
-        <figure><figcaption>Environment</figcaption><img id="outEnv" alt="environment" /></figure>
-        <figure><figcaption>Mask</figcaption><img id="outMask" alt="mask" /></figure>
-        <figure><figcaption>Generated Pattern (flat 1x1 source)</figcaption><img id="outPattern" alt="pattern" /></figure>
-        <figure><figcaption>Pattern Canvas (used for compose)</figcaption><img id="outPatternCanvas" alt="pattern canvas" /></figure>
-        <figure><figcaption>Composite</figcaption><img id="outComposite" alt="composite" /></figure>
+      <h2>4) Pilih model (.pt) dari /checkpoints</h2>
+      <div class="toolbar">
+        <button id="refreshCheckpointsBtn" type="button">Refresh list</button>
+        <button id="selectLatestCheckpointsBtn" type="button">Select latest 2</button>
+        <button id="selectAllCheckpointsBtn" type="button">Select all</button>
+        <button id="clearCheckpointsBtn" type="button">Clear</button>
+        <span id="checkpointCountLabel" class="hint">0 model dipilih</span>
       </div>
+      <div id="checkpointList" class="checkpoint-list"></div>
+      <p class="hint">Jika kamu pilih lebih dari satu model, inference akan dijalankan ke semua model yang dipilih.</p>
+    </section>
+
+    <section class="card">
+      <h2>5) Jalankan inference</h2>
+      <div class="toolbar">
+        <button id="inferBtn" type="button" class="primary">Run inference</button>
+      </div>
+      <p id="status" class="status">Siap.</p>
       <p id="stats" class="hint"></p>
     </section>
 
     <section class="card">
-      <h2>Preview 3D Pakaian</h2>
-      <p class="hint">Model: <code>long_sleeve_t-_shirt.glb</code>. Tekstur akan otomatis pakai output pattern inference terbaru.</p>
-      <div class="toolbar">
-        <label>
-          Repeat X
-          <input id="repeatX" type="range" min="0.5" max="12" step="0.1" value="4" />
-        </label>
-        <label>
-          Repeat Y
-          <input id="repeatY" type="range" min="0.5" max="12" step="0.1" value="4" />
-        </label>
-        <label>
-          Rotasi (°)
-          <input id="textureRotation" type="range" min="-180" max="180" step="1" value="0" />
-        </label>
-      </div>
-      <p id="preview3dStats" class="hint">RepeatX: 4.0 · RepeatY: 4.0 · Rotasi: 0°</p>
-      <div id="preview3dViewport" class="preview3d"></div>
+      <h2>Hasil Compare Multi-Model</h2>
+      <p class="hint">Kartu disusun horizontal. Di desktop, lebar maksimal tiap kartu = 1/4 layar agar bisa membandingkan sampai 4 model per baris.</p>
+      <div id="resultCards" class="result-cards"></div>
     </section>
   </main>
 
   <script>
     window.HCAS_MODEL_GLB_URL = "{{ model_glb_url }}";
+    window.HCAS_DEFAULT_CHECKPOINT = "{{ checkpoint_name }}";
+    window.HCAS_DEFAULT_DEVICE = "{{ default_device_policy }}";
   </script>
-  <script src="{{ url_for('static', filename='app.js') }}?v=20260323b"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=20260411b"></script>
   <script
     type="module"
-    src="{{ url_for('static', filename='preview3d.js') }}?v=20260323b"
-    onerror="(function(){var el=document.getElementById('preview3dStats'); if(el){el.textContent='Gagal memuat modul 3D. Coba hard refresh (Ctrl+F5).';}})()"
+    src="{{ url_for('static', filename='preview3d.js') }}?v=20260411a"
   ></script>
 </body>
 </html>
