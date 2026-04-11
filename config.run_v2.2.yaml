@@ -37,25 +37,25 @@ tensorboard:
   run_name: null
   flush_secs: 30
 hcas_specific:
-  lambda_sal: 10.0
+  lambda_sal: 2.0
   image_size: 512
   latent_dim: 100
 style_prior:
   enabled: true
   dataset_dir: ./camo/style_references_woodland_brushstroke
-  lambda_style: 8.0
+  lambda_style: 80
   max_images: 256
   multiscale:
   - 1.0
   - 0.5
 palette:
   enabled: true
-  lambda_palette: 4.0
+  lambda_palette: 40.0
   dataset_dir: ./camo/style_references_woodland_brushstroke
   palette_json_path: ./camo/style_references_woodland_brushstroke/style_metadata_style_references_woodland_brushstroke.json
 frequency:
   enabled: true
-  lambda_freq: 3.0
+  lambda_freq: 30.0
   dataset_dir: ./camo/style_references_woodland_brushstroke
 curriculum:
   enabled: false
