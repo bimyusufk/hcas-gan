@@ -285,6 +285,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override config.lpips.lambda_lpips",
     )
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=None,
+        help="Override hyperparameters.gradient_accumulation_steps",
+    )
     return parser.parse_args()
 
 
@@ -303,6 +309,14 @@ def main() -> None:
     log_visible_cuda_devices(gpu_count)
 
     total_epochs = int(args.epochs or config.get("hyperparameters", {}).get("epochs", 1))
+    gradient_accumulation_steps = max(
+        1,
+        int(
+            args.grad_accum_steps
+            if getattr(args, "grad_accum_steps", None) is not None
+            else config.get("hyperparameters", {}).get("gradient_accumulation_steps", 1)
+        ),
+    )
 
     checkpoint_cfg = config.get("checkpoint", {})
     checkpoint_dir = str(args.checkpoint_dir or checkpoint_cfg.get("dir", "./checkpoints"))
@@ -371,6 +385,7 @@ def main() -> None:
 
     batch_size = int(config.get("hyperparameters", {}).get("batch_size", 16))
     num_workers = int(config.get("hardware", {}).get("num_workers", 0))
+    effective_batch_size = batch_size * gradient_accumulation_steps
 
     train_loader = DataLoader(
         train_set,
@@ -635,7 +650,7 @@ def main() -> None:
     print(
         _summary_line(
             "dataset",
-            f"train={len(train_set)} | val={len(val_set)} | test={len(test_set)} | image_size={format_image_size_wh(image_size_hw)} | batch_size={batch_size} | epochs={total_epochs}",
+            f"train={len(train_set)} | val={len(val_set)} | test={len(test_set)} | image_size={format_image_size_wh(image_size_hw)} | batch_size={batch_size} | accum={gradient_accumulation_steps} | eff_batch={effective_batch_size} | epochs={total_epochs}",
         )
     )
     print(
@@ -703,6 +718,7 @@ def main() -> None:
             dataloader=train_loader,
             device=device,
             log_interval=int(args.log_interval),
+            gradient_accumulation_steps=gradient_accumulation_steps,
         )
         val_metrics = validate_one_epoch(
             generator=generator,
@@ -777,6 +793,8 @@ def main() -> None:
                     "val_d_loss": val_metrics.d_total,
                     "lr_g": lr_g,
                     "lr_d": lr_d,
+                    "gradient_accumulation_steps": gradient_accumulation_steps,
+                    "effective_batch_size": effective_batch_size,
                     "augmentation_strength": aug_strength,
                     "lambda_sal": criterion.lambda_sal,
                     "lambda_lpips": criterion.lambda_lpips,
@@ -816,6 +834,8 @@ def main() -> None:
                     "val_d_loss": val_metrics.d_total,
                     "lr_g": lr_g,
                     "lr_d": lr_d,
+                    "gradient_accumulation_steps": gradient_accumulation_steps,
+                    "effective_batch_size": effective_batch_size,
                     "augmentation_strength": aug_strength,
                     "lambda_sal": criterion.lambda_sal,
                     "lambda_lpips": criterion.lambda_lpips,

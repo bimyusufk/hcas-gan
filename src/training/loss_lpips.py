@@ -69,7 +69,7 @@ class RandomCropLPIPSLoss(nn.Module):
         *,
         enabled: bool = False,
         crop_size: int = 128,
-        num_crops: int = 4,
+        num_crops: int = 2,
         net: str = "alex",
         min_mask_coverage: float = 0.0,
         max_resample_attempts: int = 8,

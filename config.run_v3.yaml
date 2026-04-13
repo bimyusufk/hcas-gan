@@ -19,7 +19,8 @@ hyperparameters:
   learning_rate_D: 0.0002
   beta1: 0.5
   beta2: 0.999
-  batch_size: 8
+  batch_size: 4
+  gradient_accumulation_steps: 4
   epochs: 400
 checkpoint:
   dir: ./checkpoints
@@ -66,7 +67,7 @@ lpips:
   enabled: true
   lambda_lpips: 1.0
   crop_size: 128
-  num_crops: 1
+  num_crops: 4
   net: alex
   min_mask_coverage: 0.0
   max_resample_attempts: 8

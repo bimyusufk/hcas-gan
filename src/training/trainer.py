@@ -120,6 +120,7 @@ def train_one_epoch(
     dataloader: DataLoader,
     device: torch.device,
     log_interval: int = 0,
+    gradient_accumulation_steps: int = 1,
     max_grad_norm_g: float | None = None,
     max_grad_norm_d: float | None = None,
 ) -> EpochMetrics:
@@ -127,6 +128,8 @@ def train_one_epoch(
     generator.train()
     discriminator.train()
     saliency_model.eval()
+
+    accumulation_steps = max(1, int(gradient_accumulation_steps))
 
     running: dict[str, float] = {
         "g_total": 0.0,
@@ -145,13 +148,18 @@ def train_one_epoch(
 
     t0 = perf_counter()
 
+    total_steps = len(dataloader)
+
     for step, batch in enumerate(dataloader, start=1):
         real_image, mask = _extract_batch(batch, device=device)
         batch_size = int(real_image.shape[0])
+        is_accum_start = ((step - 1) % accumulation_steps) == 0
+        is_accum_end = (step % accumulation_steps) == 0 or step == total_steps
 
         # --- Train Discriminator ---
         _set_requires_grad(discriminator, True)
-        optimizer_d.zero_grad(set_to_none=True)
+        if is_accum_start:
+            optimizer_d.zero_grad(set_to_none=True)
 
         with torch.no_grad():
             fake_pattern_d = generator(real_image)
@@ -161,16 +169,17 @@ def train_one_epoch(
         pred_fake = discriminator(fake_composite_d.detach())
 
         d_total, d_real, d_fake = criterion.discriminator_loss(pred_real, pred_fake)
-        d_total.backward()
+        (d_total / float(accumulation_steps)).backward()
 
-        if max_grad_norm_d is not None:
-            torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_grad_norm_d)
-
-        optimizer_d.step()
+        if is_accum_end:
+            if max_grad_norm_d is not None:
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_grad_norm_d)
+            optimizer_d.step()
 
         # --- Train Generator ---
         _set_requires_grad(discriminator, False)
-        optimizer_g.zero_grad(set_to_none=True)
+        if is_accum_start:
+            optimizer_g.zero_grad(set_to_none=True)
 
         fake_pattern_g = generator(real_image)
         fake_composite_g = _compose_with_mask(real_image, fake_pattern_g, mask)
@@ -188,12 +197,12 @@ def train_one_epoch(
             fake_composite=fake_composite_g,
             update_running_stats=True,
         )
-        g_total.backward()
+        (g_total / float(accumulation_steps)).backward()
 
-        if max_grad_norm_g is not None:
-            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_grad_norm_g)
-
-        optimizer_g.step()
+        if is_accum_end:
+            if max_grad_norm_g is not None:
+                torch.nn.utils.clip_grad_norm_(generator.parameters(), max_grad_norm_g)
+            optimizer_g.step()
 
         # Restore D grads for next iteration and aggregate metrics
         _set_requires_grad(discriminator, True)
