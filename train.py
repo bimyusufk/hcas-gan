@@ -29,11 +29,13 @@ from src.training.checkpoint import CheckpointManager
 from src.training.curriculum import build_lambda_scheduler
 from src.training.loss_frequency import FrequencyLoss
 from src.training.loss import HCASLoss
+from src.training.loss_lpips import RandomCropLPIPSLoss
 from src.training.loss_palette import PaletteLoss
 from src.training.loss_style import StylePriorLoss
 from src.training.scheduler import build_scheduler, get_learning_rate, step_scheduler
 from src.training.tensorboard import build_summary_writer
 from src.training.trainer import train_one_epoch, validate_one_epoch
+from src.utils.image_size import coerce_image_size_hw, format_image_size_wh
 
 
 def load_config(config_path: Path) -> dict:
@@ -114,11 +116,26 @@ def _resolve_path_like(value: str | None, root: Path) -> str:
     return str(p)
 
 
+def _parse_image_size(raw_value: object) -> tuple[int, int]:
+    return coerce_image_size_hw(raw_value, default=(256, 256))
+
+
+def _loss_status(loss: nn.Module | None) -> str:
+    if loss is None:
+        return "off"
+    return "on" if bool(getattr(loss, "is_ready", False)) else "off"
+
+
+def _summary_line(label: str, value: str, width: int = 16) -> str:
+    return f"[HCAS-GAN] {label:<{width}}: {value}"
+
+
 def apply_cli_overrides(config: dict, args: argparse.Namespace, root: Path) -> dict:
     data_cfg = dict(config.get("data", {}) or {})
     style_cfg = dict(config.get("style_prior", {}) or {})
     palette_cfg = dict(config.get("palette", {}) or {})
     freq_cfg = dict(config.get("frequency", {}) or {})
+    lpips_cfg = dict(config.get("lpips", {}) or {})
     hcas_cfg = dict(config.get("hcas_specific", {}) or {})
     curriculum_cfg = dict(config.get("curriculum", {}) or {})
     lambda_sal_cfg = dict(curriculum_cfg.get("lambda_sal", {}) or {})
@@ -145,11 +162,14 @@ def apply_cli_overrides(config: dict, args: argparse.Namespace, root: Path) -> d
         palette_cfg["lambda_palette"] = float(args.lambda_palette)
     if getattr(args, "lambda_freq", None) is not None:
         freq_cfg["lambda_freq"] = float(args.lambda_freq)
+    if getattr(args, "lambda_lpips", None) is not None:
+        lpips_cfg["lambda_lpips"] = float(args.lambda_lpips)
 
     config["data"] = data_cfg
     config["style_prior"] = style_cfg
     config["palette"] = palette_cfg
     config["frequency"] = freq_cfg
+    config["lpips"] = lpips_cfg
     config["hcas_specific"] = hcas_cfg
     curriculum_cfg["lambda_sal"] = lambda_sal_cfg
     config["curriculum"] = curriculum_cfg
@@ -259,6 +279,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Override config.frequency.lambda_freq",
     )
+    parser.add_argument(
+        "--lambda-lpips",
+        type=float,
+        default=None,
+        help="Override config.lpips.lambda_lpips",
+    )
     return parser.parse_args()
 
 
@@ -269,16 +295,11 @@ def main() -> None:
     config = load_config((root / args.config).resolve())
     config = apply_cli_overrides(config, args, root)
 
-    print(f"[HCAS-GAN] Experiment: {config['experiment']['name']}")
-
     seed = int(config.get("experiment", {}).get("seed", 42))
     set_seed(seed)
 
     device, gpu_count = resolve_runtime_hardware(config)
     multi_gpu = should_use_multi_gpu(config, device, gpu_count)
-    print(
-        f"[HCAS-GAN] Device: {device} | cuda_available={torch.cuda.is_available()} | gpu_count={gpu_count} | multi_gpu={multi_gpu}"
-    )
     log_visible_cuda_devices(gpu_count)
 
     total_epochs = int(args.epochs or config.get("hyperparameters", {}).get("epochs", 1))
@@ -330,15 +351,15 @@ def main() -> None:
         seed=seed,
     )
 
-    image_size = int(config.get("hcas_specific", {}).get("image_size", 256))
+    image_size_hw = _parse_image_size(config.get("hcas_specific", {}).get("image_size", 256))
     augmentations_cfg = config.get("augmentations", {})
     train_augmenter = build_augmentations(augmentations_cfg)
 
     train_collate_fn = build_resize_collate_fn(
-        image_size=image_size,
+        image_size=image_size_hw,
         augmenter=train_augmenter,
     )
-    eval_collate_fn = build_resize_collate_fn(image_size=image_size)
+    eval_collate_fn = build_resize_collate_fn(image_size=image_size_hw)
 
     batch_size = int(config.get("hyperparameters", {}).get("batch_size", 16))
     num_workers = int(config.get("hardware", {}).get("num_workers", 0))
@@ -427,36 +448,68 @@ def main() -> None:
     style_cfg = config.get("style_prior", {})
     palette_cfg = config.get("palette", {})
     freq_cfg = config.get("frequency", {})
+    lpips_cfg = config.get("lpips", {})
+    balance_cfg = config.get("loss_balance", {})
+    image_size_side = max(int(image_size_hw[0]), int(image_size_hw[1]))
 
-    style_loss = StylePriorLoss(
-        enabled=bool(style_cfg.get("enabled", False)),
-        dataset_dir=_resolve_path_like(style_cfg.get("dataset_dir", ""), root),
-        image_size=image_size,
-        max_images=int(style_cfg.get("max_images", 256)),
-        multiscale=tuple(style_cfg.get("multiscale", [1.0, 0.5])),
-    )
-    palette_loss = PaletteLoss(
-        enabled=bool(palette_cfg.get("enabled", False)),
-        palette_json_path=_resolve_path_like(palette_cfg.get("palette_json_path", ""), root) or None,
-        dataset_dir=_resolve_path_like(palette_cfg.get("dataset_dir", ""), root) or None,
-        n_colors=int(palette_cfg.get("n_colors", 6)),
-    )
-    frequency_loss = FrequencyLoss(
-        enabled=bool(freq_cfg.get("enabled", False)),
-        dataset_dir=_resolve_path_like(freq_cfg.get("dataset_dir", ""), root) or None,
-        image_size=image_size,
-        n_bins=int(freq_cfg.get("n_bins", 32)),
-    )
+    style_loss = None
+    if bool(style_cfg.get("enabled", False)):
+        style_loss = StylePriorLoss(
+            enabled=True,
+            dataset_dir=_resolve_path_like(style_cfg.get("dataset_dir", ""), root),
+            image_size=image_size_side,
+            max_images=int(style_cfg.get("max_images", 256)),
+            multiscale=tuple(style_cfg.get("multiscale", [1.0, 0.5])),
+        )
+
+    palette_loss = None
+    if bool(palette_cfg.get("enabled", False)):
+        palette_loss = PaletteLoss(
+            enabled=True,
+            palette_json_path=_resolve_path_like(palette_cfg.get("palette_json_path", ""), root) or None,
+            dataset_dir=_resolve_path_like(palette_cfg.get("dataset_dir", ""), root) or None,
+            n_colors=int(palette_cfg.get("n_colors", 6)),
+        )
+
+    frequency_loss = None
+    if bool(freq_cfg.get("enabled", False)):
+        frequency_loss = FrequencyLoss(
+            enabled=True,
+            dataset_dir=_resolve_path_like(freq_cfg.get("dataset_dir", ""), root) or None,
+            image_size=image_size_side,
+            n_bins=int(freq_cfg.get("n_bins", 32)),
+        )
+
+    lpips_enabled = bool(lpips_cfg.get("enabled", False)) or float(lpips_cfg.get("lambda_lpips", 0.0)) > 0.0
+    lpips_loss = None
+    if lpips_enabled:
+        lpips_loss = RandomCropLPIPSLoss(
+            enabled=True,
+            crop_size=int(lpips_cfg.get("crop_size", 128)),
+            num_crops=int(lpips_cfg.get("num_crops", 4)),
+            net=str(lpips_cfg.get("net", "alex")),
+            min_mask_coverage=float(lpips_cfg.get("min_mask_coverage", 0.0)),
+            max_resample_attempts=int(lpips_cfg.get("max_resample_attempts", 8)),
+        )
+        if not lpips_loss.is_ready:
+            reason = lpips_loss.initialization_error or "LPIPS backend unavailable"
+            raise RuntimeError(f"LPIPS loss requested but could not be initialized: {reason}")
 
     criterion = HCASLoss(
         lambda_sal=float(config.get("hcas_specific", {}).get("lambda_sal", 15.0)),
+        lambda_lpips=float(lpips_cfg.get("lambda_lpips", 0.0)),
         lambda_style=float(style_cfg.get("lambda_style", 0.0)),
         lambda_palette=float(palette_cfg.get("lambda_palette", 0.0)),
         lambda_freq=float(freq_cfg.get("lambda_freq", 0.0)),
+        normalize_saliency=bool(balance_cfg.get("enabled", False)) and bool(balance_cfg.get("normalize_saliency", True)),
+        normalize_lpips=bool(balance_cfg.get("enabled", False)) and bool(balance_cfg.get("normalize_lpips", True)),
+        ema_momentum=float(balance_cfg.get("ema_momentum", 0.99)),
+        ema_eps=float(balance_cfg.get("ema_eps", 1e-8)),
+        lpips_loss=lpips_loss,
         style_loss=style_loss,
         palette_loss=palette_loss,
         frequency_loss=frequency_loss,
-    )
+    ).to(device)
 
     curriculum_cfg = config.get("curriculum", {}).get("lambda_sal", {})
     lambda_sal_scheduler = build_lambda_scheduler(
@@ -504,11 +557,6 @@ def main() -> None:
         checkpoint_dir=checkpoint_dir,
         keep_last_n=checkpoint_keep_last_n,
     )
-    print(
-        f"[HCAS-GAN] Checkpoint: dir={checkpoint_manager.checkpoint_dir} "
-        f"interval={checkpoint_interval} keep_last_n={checkpoint_keep_last_n}"
-    )
-
     writer = build_summary_writer(
         enabled=tensorboard_enabled,
         log_dir=tensorboard_dir,
@@ -520,9 +568,11 @@ def main() -> None:
         writer.add_text("runtime/device", str(device))
         writer.add_text("scheduler/type", scheduler_type if scheduler_enabled else "disabled")
         writer.add_text("saliency/backend", saliency_info.active_backend)
-        print(f"[HCAS-GAN] TensorBoard: enabled log_dir={writer.log_dir}")
-    else:
-        print("[HCAS-GAN] TensorBoard: disabled")
+        writer.add_text("lpips/backend", lpips_loss.backend if lpips_loss is not None else "disabled")
+        writer.add_text(
+            "loss_balance/mode",
+            "ema" if bool(balance_cfg.get("enabled", False)) else "disabled",
+        )
 
     start_epoch = 1
     if resume_from:
@@ -541,6 +591,7 @@ def main() -> None:
                     resume_path,
                     generator=generator,
                     discriminator=discriminator,
+                    criterion=criterion,
                     optimizer_g=optimizer_g,
                     optimizer_d=optimizer_d,
                     scheduler_g=scheduler_g,
@@ -556,17 +607,55 @@ def main() -> None:
                 print("[HCAS-GAN] Starting from scratch.")
                 start_epoch = 1
 
+    print()
+    print("[HCAS-GAN] ===== Training summary =====")
+    print(_summary_line("experiment", str(config["experiment"]["name"])))
+    print(_summary_line("config", str((root / args.config).resolve())))
+    print(_summary_line("seed", str(seed)))
     print(
-        f"[HCAS-GAN] Dataset split: train={len(train_set)} val={len(val_set)} test={len(test_set)} "
-        f"| image_size={image_size} | batch_size={batch_size} | epochs={total_epochs}"
+        _summary_line(
+            "runtime",
+            f"device={device} | cuda={torch.cuda.is_available()} | gpu_count={gpu_count} | multi_gpu={multi_gpu}",
+        )
     )
     print(
-        f"[HCAS-GAN] Extra losses: style={'on' if style_loss.is_ready else 'off'} "
-        f"palette={'on' if palette_loss.is_ready else 'off'} "
-        f"frequency={'on' if frequency_loss.is_ready else 'off'}"
+        _summary_line(
+            "dataset",
+            f"train={len(train_set)} | val={len(val_set)} | test={len(test_set)} | image_size={format_image_size_wh(image_size_hw)} | batch_size={batch_size} | epochs={total_epochs}",
+        )
+    )
+    print(
+        _summary_line(
+            "checkpoint",
+            f"dir={checkpoint_manager.checkpoint_dir} | interval={checkpoint_interval} | keep_last_n={checkpoint_keep_last_n}",
+        )
+    )
+    print(
+        _summary_line(
+            "tensorboard",
+            f"{'enabled' if writer is not None else 'disabled'} | log_dir={tensorboard_dir}",
+        )
+    )
+    print(
+        _summary_line(
+            "saliency",
+            f"backend={saliency_info.active_backend} | model={saliency_info.model_name} | fallback={'yes' if saliency_info.using_fallback else 'no'}",
+        )
+    )
+    print(
+        _summary_line(
+            "priors",
+            f"style={_loss_status(style_loss)} | palette={_loss_status(palette_loss)} | frequency={_loss_status(frequency_loss)} | lpips={_loss_status(lpips_loss)}",
+        )
+    )
+    print(
+        _summary_line(
+            "balance",
+            f"{'ema' if bool(balance_cfg.get('enabled', False)) else 'off'} | lambda_sal={criterion.lambda_sal:.4f} | lambda_lpips={criterion.lambda_lpips:.4f} | sal_ema={criterion.saliency_loss_ema_value:.4f} | lpips_ema={criterion.lpips_loss_ema_value:.4f}",
+        )
     )
     if area_sampler is not None:
-        print("[HCAS-GAN] Mask-area curriculum sampler: enabled")
+        print(_summary_line("sampling", "mask-area curriculum sampler enabled"))
 
     for epoch in range(start_epoch, total_epochs + 1):
         criterion.lambda_sal = float(lambda_sal_scheduler.value(epoch))
@@ -611,7 +700,9 @@ def main() -> None:
             f"[epoch {epoch}/{total_epochs}] "
             f"train_g={train_metrics.g_total:.4f} train_d={train_metrics.d_total:.4f} "
             f"val_g={val_metrics.g_total:.4f} val_d={val_metrics.d_total:.4f} "
-            f"lr_g={lr_g:.6f} lr_d={lr_d:.6f} lambda_sal={criterion.lambda_sal:.4f}{aug_part}"
+            f"lr_g={lr_g:.6f} lr_d={lr_d:.6f} lambda_sal={criterion.lambda_sal:.4f} "
+            f"lambda_lpips={criterion.lambda_lpips:.4f} "
+            f"sal_ema={criterion.saliency_loss_ema_value:.4f} lpips_ema={criterion.lpips_loss_ema_value:.4f}{aug_part}"
         )
 
         if writer is not None:
@@ -619,6 +710,7 @@ def main() -> None:
             writer.add_scalar("loss/train/d_total", train_metrics.d_total, epoch)
             writer.add_scalar("loss/train/g_adv", train_metrics.g_adv, epoch)
             writer.add_scalar("loss/train/g_sal", train_metrics.g_sal, epoch)
+            writer.add_scalar("loss/train/g_lpips", train_metrics.g_lpips, epoch)
             writer.add_scalar("loss/train/g_style", train_metrics.g_style, epoch)
             writer.add_scalar("loss/train/g_palette", train_metrics.g_palette, epoch)
             writer.add_scalar("loss/train/g_freq", train_metrics.g_freq, epoch)
@@ -626,10 +718,14 @@ def main() -> None:
             writer.add_scalar("loss/val/d_total", val_metrics.d_total, epoch)
             writer.add_scalar("loss/val/g_adv", val_metrics.g_adv, epoch)
             writer.add_scalar("loss/val/g_sal", val_metrics.g_sal, epoch)
+            writer.add_scalar("loss/val/g_lpips", val_metrics.g_lpips, epoch)
             writer.add_scalar("loss/val/g_style", val_metrics.g_style, epoch)
             writer.add_scalar("loss/val/g_palette", val_metrics.g_palette, epoch)
             writer.add_scalar("loss/val/g_freq", val_metrics.g_freq, epoch)
             writer.add_scalar("loss/lambda_sal", criterion.lambda_sal, epoch)
+            writer.add_scalar("loss/lambda_lpips", criterion.lambda_lpips, epoch)
+            writer.add_scalar("loss_balance/saliency_ema", criterion.saliency_loss_ema_value, epoch)
+            writer.add_scalar("loss_balance/lpips_ema", criterion.lpips_loss_ema_value, epoch)
             writer.add_scalar("lr/g", lr_g, epoch)
             writer.add_scalar("lr/d", lr_d, epoch)
             if aug_strength is not None:
@@ -648,6 +744,7 @@ def main() -> None:
                 step=epoch * len(train_loader),
                 generator=generator,
                 discriminator=discriminator,
+                criterion=criterion,
                 optimizer_g=optimizer_g,
                 optimizer_d=optimizer_d,
                 scheduler_g=scheduler_g,
@@ -661,6 +758,11 @@ def main() -> None:
                     "lr_d": lr_d,
                     "augmentation_strength": aug_strength,
                     "lambda_sal": criterion.lambda_sal,
+                    "lambda_lpips": criterion.lambda_lpips,
+                    "saliency_ema": criterion.saliency_loss_ema_value,
+                    "lpips_ema": criterion.lpips_loss_ema_value,
+                    "train_g_lpips": train_metrics.g_lpips,
+                    "val_g_lpips": val_metrics.g_lpips,
                     "train_g_style": train_metrics.g_style,
                     "train_g_palette": train_metrics.g_palette,
                     "train_g_freq": train_metrics.g_freq,
@@ -683,11 +785,12 @@ def main() -> None:
     )
     print(
         "[final test] "
-        f"g_total={test_metrics.g_total:.4f} d_total={test_metrics.d_total:.4f} "
+        f"g_total={test_metrics.g_total:.4f} g_lpips={test_metrics.g_lpips:.4f} d_total={test_metrics.d_total:.4f} "
         f"samples={test_metrics.num_samples}"
     )
     if writer is not None:
         writer.add_scalar("loss/test/g_total", test_metrics.g_total, total_epochs)
+        writer.add_scalar("loss/test/g_lpips", test_metrics.g_lpips, total_epochs)
         writer.add_scalar("loss/test/d_total", test_metrics.d_total, total_epochs)
         writer.flush()
         writer.close()

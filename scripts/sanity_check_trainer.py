@@ -28,6 +28,7 @@ from src.models.discriminator import PatchDiscriminator
 from src.models.generator import GeneratorUNet
 from src.training.loss import HCASLoss
 from src.training.trainer import train_one_epoch, validate_one_epoch
+from src.utils.image_size import coerce_image_size_hw
 
 
 def _set_seed(seed: int) -> None:
@@ -75,7 +76,7 @@ def main() -> None:
 
     batch_size = min(int(cfg.get("hyperparameters", {}).get("batch_size", 4)), 4)
 
-    image_size = int(cfg.get("hcas_specific", {}).get("image_size", 256))
+    image_size = coerce_image_size_hw(cfg.get("hcas_specific", {}).get("image_size", 256))
     train_augmenter = build_augmentations(cfg.get("augmentations", {}))
     aug_strength = None
     if train_augmenter is not None and hasattr(train_augmenter, "set_epoch"):

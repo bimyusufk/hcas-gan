@@ -20,6 +20,7 @@ class CheckpointData:
     step: int
     generator_state: dict[str, Any]
     discriminator_state: dict[str, Any]
+    criterion_state: dict[str, Any] | None
     optimizer_g_state: dict[str, Any]
     optimizer_d_state: dict[str, Any]
     scheduler_g_state: dict[str, Any] | None = None
@@ -48,6 +49,7 @@ class CheckpointManager:
         step: int,
         generator: nn.Module,
         discriminator: nn.Module,
+        criterion: nn.Module | None = None,
         optimizer_g: Optimizer,
         optimizer_d: Optimizer,
         scheduler_g: Any = None,
@@ -80,6 +82,7 @@ class CheckpointManager:
             step=int(step),
             generator_state=_state_dict(generator),
             discriminator_state=_state_dict(discriminator),
+            criterion_state=_state_dict(criterion) if criterion is not None else None,
             optimizer_g_state=optimizer_g.state_dict(),
             optimizer_d_state=optimizer_d.state_dict(),
             scheduler_g_state=scheduler_g.state_dict() if scheduler_g is not None else None,
@@ -100,6 +103,7 @@ class CheckpointManager:
         *,
         generator: nn.Module,
         discriminator: nn.Module,
+        criterion: nn.Module | None = None,
         optimizer_g: Optimizer,
         optimizer_d: Optimizer,
         scheduler_g: Any = None,
@@ -136,6 +140,7 @@ class CheckpointManager:
                 step=int(checkpoint_data["step"]),
                 generator_state=checkpoint_data.get("generator_state", {}),
                 discriminator_state=checkpoint_data.get("discriminator_state", {}),
+                criterion_state=checkpoint_data.get("criterion_state"),
                 optimizer_g_state=checkpoint_data.get("optimizer_g_state", {}),
                 optimizer_d_state=checkpoint_data.get("optimizer_d_state", {}),
                 scheduler_g_state=checkpoint_data.get("scheduler_g_state"),
@@ -151,6 +156,8 @@ class CheckpointManager:
 
         _load(generator, checkpoint_data_obj.generator_state)
         _load(discriminator, checkpoint_data_obj.discriminator_state)
+        if criterion is not None and checkpoint_data_obj.criterion_state is not None:
+            _load(criterion, checkpoint_data_obj.criterion_state)
         optimizer_g.load_state_dict(checkpoint_data_obj.optimizer_g_state)
         optimizer_d.load_state_dict(checkpoint_data_obj.optimizer_d_state)
 

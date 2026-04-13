@@ -28,6 +28,7 @@ class EpochMetrics:
     g_total: float
     g_adv: float
     g_sal: float
+    g_lpips: float
     g_style: float
     g_palette: float
     g_freq: float
@@ -131,6 +132,7 @@ def train_one_epoch(
         "g_total": 0.0,
         "g_adv": 0.0,
         "g_sal": 0.0,
+        "g_lpips": 0.0,
         "g_style": 0.0,
         "g_palette": 0.0,
         "g_freq": 0.0,
@@ -177,11 +179,14 @@ def train_one_epoch(
         saliency_map = saliency_model(fake_composite_g)
         saliency_map = _resize_saliency_to_mask(saliency_map, mask)
 
-        g_total, g_adv, g_sal, g_style, g_palette, g_freq = criterion.generator_loss(
+        g_total, g_adv, g_sal, g_lpips, g_style, g_palette, g_freq = criterion.generator_loss(
             discriminator_pred=pred_fake_for_g,
             saliency_map=saliency_map,
             mask=mask,
             fake_pattern=fake_pattern_g,
+            background=real_image,
+            fake_composite=fake_composite_g,
+            update_running_stats=True,
         )
         g_total.backward()
 
@@ -196,6 +201,7 @@ def train_one_epoch(
         running["g_total"] += float(g_total.detach().item()) * batch_size
         running["g_adv"] += float(g_adv.detach().item()) * batch_size
         running["g_sal"] += float(g_sal.detach().item()) * batch_size
+        running["g_lpips"] += float(g_lpips.detach().item()) * batch_size
         running["g_style"] += float(g_style.detach().item()) * batch_size
         running["g_palette"] += float(g_palette.detach().item()) * batch_size
         running["g_freq"] += float(g_freq.detach().item()) * batch_size
@@ -211,6 +217,7 @@ def train_one_epoch(
                 f"g_total={float(g_total.detach().item()):.4f} "
                 f"g_adv={float(g_adv.detach().item()):.4f} "
                 f"g_sal={float(g_sal.detach().item()):.4f} "
+                f"g_lpips={float(g_lpips.detach().item()):.4f} "
                 f"g_style={float(g_style.detach().item()):.4f} "
                 f"g_palette={float(g_palette.detach().item()):.4f} "
                 f"g_freq={float(g_freq.detach().item()):.4f} "
@@ -222,6 +229,7 @@ def train_one_epoch(
         g_total=_safe_mean(running["g_total"], num_samples),
         g_adv=_safe_mean(running["g_adv"], num_samples),
         g_sal=_safe_mean(running["g_sal"], num_samples),
+        g_lpips=_safe_mean(running["g_lpips"], num_samples),
         g_style=_safe_mean(running["g_style"], num_samples),
         g_palette=_safe_mean(running["g_palette"], num_samples),
         g_freq=_safe_mean(running["g_freq"], num_samples),
@@ -253,6 +261,7 @@ def validate_one_epoch(
         "g_total": 0.0,
         "g_adv": 0.0,
         "g_sal": 0.0,
+        "g_lpips": 0.0,
         "g_style": 0.0,
         "g_palette": 0.0,
         "g_freq": 0.0,
@@ -277,16 +286,20 @@ def validate_one_epoch(
         saliency_map = _resize_saliency_to_mask(saliency_map, mask)
 
         d_total, d_real, d_fake = criterion.discriminator_loss(pred_real, pred_fake)
-        g_total, g_adv, g_sal, g_style, g_palette, g_freq = criterion.generator_loss(
+        g_total, g_adv, g_sal, g_lpips, g_style, g_palette, g_freq = criterion.generator_loss(
             discriminator_pred=pred_fake,
             saliency_map=saliency_map,
             mask=mask,
             fake_pattern=fake_pattern,
+            background=real_image,
+            fake_composite=fake_composite,
+            update_running_stats=False,
         )
 
         running["g_total"] += float(g_total.item()) * batch_size
         running["g_adv"] += float(g_adv.item()) * batch_size
         running["g_sal"] += float(g_sal.item()) * batch_size
+        running["g_lpips"] += float(g_lpips.item()) * batch_size
         running["g_style"] += float(g_style.item()) * batch_size
         running["g_palette"] += float(g_palette.item()) * batch_size
         running["g_freq"] += float(g_freq.item()) * batch_size
@@ -301,6 +314,7 @@ def validate_one_epoch(
         g_total=_safe_mean(running["g_total"], num_samples),
         g_adv=_safe_mean(running["g_adv"], num_samples),
         g_sal=_safe_mean(running["g_sal"], num_samples),
+        g_lpips=_safe_mean(running["g_lpips"], num_samples),
         g_style=_safe_mean(running["g_style"], num_samples),
         g_palette=_safe_mean(running["g_palette"], num_samples),
         g_freq=_safe_mean(running["g_freq"], num_samples),

@@ -4,6 +4,7 @@ from .checkpoint import CheckpointData, CheckpointManager
 from .curriculum import LambdaScheduler, build_lambda_scheduler
 from .loss_frequency import FrequencyLoss
 from .loss import HCASLoss
+from .loss_lpips import RandomCropLPIPSLoss
 from .loss_palette import PaletteLoss
 from .loss_style import StylePriorLoss
 from .scheduler import build_scheduler, get_learning_rate, step_scheduler
@@ -18,6 +19,7 @@ __all__ = [
     "StylePriorLoss",
     "PaletteLoss",
     "FrequencyLoss",
+    "RandomCropLPIPSLoss",
     "HCASLoss",
     "EpochMetrics",
     "build_scheduler",

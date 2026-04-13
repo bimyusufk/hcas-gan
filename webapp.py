@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.models import GeneratorUNet
+from src.utils.image_size import coerce_image_size_hw, format_image_size_wh
 
 
 CHECKPOINT_NAME_RE = re.compile(r"checkpoint_epoch_(\d+)_step_(\d+)(?:_[^.]+)?\.pt$")
@@ -178,7 +179,9 @@ class InferenceService:
         }
         self.min_polygon_points = 3
 
-        self.image_size = int(config.get("hcas_specific", {}).get("image_size", 256))
+        self.image_size_hw = coerce_image_size_hw(config.get("hcas_specific", {}).get("image_size", 256))
+        self.image_height = int(self.image_size_hw[0])
+        self.image_width = int(self.image_size_hw[1])
         self.compose_mode = str(compose_mode).strip().lower()
         self.tile_size = int(max(4, tile_size))
         self.random_tiling = bool(random_tiling)
@@ -694,8 +697,8 @@ class InferenceService:
                 if compose_mode == "tile":
                     pattern_used_t = self._tile_to_canvas(
                         tile_src_t,
-                        int(self.image_size),
-                        int(self.image_size),
+                        int(self.image_height),
+                        int(self.image_width),
                         randomize=self.random_tiling,
                         seed=1234,
                     )
@@ -772,8 +775,8 @@ class InferenceService:
         mask0 = _build_mask(h0, w0, polygon_points)
 
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image_rgb, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
-        mask = cv2.resize(mask0, (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)
+        image = cv2.resize(image_rgb, (self.image_width, self.image_height), interpolation=cv2.INTER_LINEAR)
+        mask = cv2.resize(mask0, (self.image_width, self.image_height), interpolation=cv2.INTER_NEAREST)
         mask = (mask > 0).astype(np.float32)
 
         image_t = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
@@ -855,8 +858,8 @@ class InferenceService:
         return {
             "environment": _to_base64_png(env_bgr),
             "mask": _to_base64_png(mask_bgr),
-            "width": int(self.image_size),
-            "height": int(self.image_size),
+            "width": int(self.image_width),
+            "height": int(self.image_height),
             "mask_area_ratio": float(mask.mean()),
             "selected_checkpoints": checkpoint_summaries,
             "runtime_device": str(runtime_device),
@@ -952,7 +955,9 @@ def create_app(service: InferenceService) -> Flask:
         return render_template(
             "index.html",
             checkpoint_name=service.checkpoint_path.name,
-            image_size=service.image_size,
+            image_size_label=format_image_size_wh(service.image_size_hw),
+            image_size_w=service.image_width,
+            image_size_h=service.image_height,
             default_device_policy=service.default_device_policy,
             compose_mode=service.compose_mode,
             tile_size=service.tile_size,
@@ -1146,7 +1151,7 @@ def main() -> None:
     print(f"[webapp] checkpoint_count={len(service.available_checkpoint_paths)}")
     print(f"[webapp] environment_samples={len(service.environment_samples)} dir={service.annotations_dir}")
     print(
-        f"[webapp] default_device={service.default_device} image_size={service.image_size} "
+        f"[webapp] default_device={service.default_device} image_size={format_image_size_wh(service.image_size_hw)} "
         f"compose_mode={service.compose_mode} tile_size={service.tile_size} "
         f"random_tiling={service.random_tiling} color_match={service.color_match} "
         f"feather_kernel={service.feather_kernel} feather_sigma={service.feather_sigma:.2f} "
