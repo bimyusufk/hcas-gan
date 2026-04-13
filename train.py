@@ -313,6 +313,14 @@ def main() -> None:
     )
     checkpoint_keep_last_n = int(checkpoint_cfg.get("keep_last_n", 3))
     resume_from = args.resume_from if args.resume_from is not None else checkpoint_cfg.get("resume_from")
+    archive_checkpoint_dir_raw = checkpoint_cfg.get("archive_dir", None)
+    archive_checkpoint_interval = int(checkpoint_cfg.get("archive_interval", 60))
+    archive_checkpoint_keep_last_n = int(checkpoint_cfg.get("archive_keep_last_n", max(1, checkpoint_keep_last_n)))
+    archive_checkpoint_dir = None
+    if archive_checkpoint_dir_raw:
+        archive_checkpoint_dir = Path(_resolve_path_like(str(archive_checkpoint_dir_raw), root))
+        if archive_checkpoint_dir == checkpoint_dir:
+            archive_checkpoint_dir = checkpoint_dir / "archive_60"
 
     scheduler_cfg = config.get("scheduler", {})
     scheduler_enabled = (not args.no_scheduler) and bool(scheduler_cfg.get("enabled", True))
@@ -557,6 +565,12 @@ def main() -> None:
         checkpoint_dir=checkpoint_dir,
         keep_last_n=checkpoint_keep_last_n,
     )
+    archive_checkpoint_manager = None
+    if archive_checkpoint_dir is not None and archive_checkpoint_interval > 0:
+        archive_checkpoint_manager = CheckpointManager(
+            checkpoint_dir=archive_checkpoint_dir,
+            keep_last_n=archive_checkpoint_keep_last_n,
+        )
     writer = build_summary_writer(
         enabled=tensorboard_enabled,
         log_dir=tensorboard_dir,
@@ -630,6 +644,13 @@ def main() -> None:
             f"dir={checkpoint_manager.checkpoint_dir} | interval={checkpoint_interval} | keep_last_n={checkpoint_keep_last_n}",
         )
     )
+    if archive_checkpoint_manager is not None:
+        print(
+            _summary_line(
+                "archive",
+                f"dir={archive_checkpoint_manager.checkpoint_dir} | interval={archive_checkpoint_interval} | keep_last_n={archive_checkpoint_keep_last_n}",
+            )
+        )
     print(
         _summary_line(
             "tensorboard",
@@ -774,6 +795,45 @@ def main() -> None:
             print(f"[HCAS-GAN] Checkpoint saved: {ckpt_path.name}")
             if writer is not None:
                 writer.add_text("checkpoint/saved", f"epoch={epoch} path={ckpt_path.name}", epoch)
+
+        if archive_checkpoint_manager is not None and archive_checkpoint_interval > 0 and epoch % archive_checkpoint_interval == 0:
+            archive_ckpt_path = archive_checkpoint_manager.save(
+                epoch=epoch,
+                step=epoch * len(train_loader),
+                generator=generator,
+                discriminator=discriminator,
+                criterion=criterion,
+                optimizer_g=optimizer_g,
+                optimizer_d=optimizer_d,
+                scheduler_g=scheduler_g,
+                scheduler_d=scheduler_d,
+                metadata={
+                    "archive": True,
+                    "source_checkpoint_dir": str(checkpoint_manager.checkpoint_dir),
+                    "train_g_loss": train_metrics.g_total,
+                    "val_g_loss": val_metrics.g_total,
+                    "train_d_loss": train_metrics.d_total,
+                    "val_d_loss": val_metrics.d_total,
+                    "lr_g": lr_g,
+                    "lr_d": lr_d,
+                    "augmentation_strength": aug_strength,
+                    "lambda_sal": criterion.lambda_sal,
+                    "lambda_lpips": criterion.lambda_lpips,
+                    "saliency_ema": criterion.saliency_loss_ema_value,
+                    "lpips_ema": criterion.lpips_loss_ema_value,
+                    "train_g_lpips": train_metrics.g_lpips,
+                    "val_g_lpips": val_metrics.g_lpips,
+                    "train_g_style": train_metrics.g_style,
+                    "train_g_palette": train_metrics.g_palette,
+                    "train_g_freq": train_metrics.g_freq,
+                    "val_g_style": val_metrics.g_style,
+                    "val_g_palette": val_metrics.g_palette,
+                    "val_g_freq": val_metrics.g_freq,
+                },
+            )
+            print(f"[HCAS-GAN] Archive checkpoint saved: {archive_ckpt_path.name}")
+            if writer is not None:
+                writer.add_text("checkpoint/archive_saved", f"epoch={epoch} path={archive_ckpt_path.name}", epoch)
 
     test_metrics = validate_one_epoch(
         generator=generator,
