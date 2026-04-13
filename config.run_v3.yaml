@@ -19,7 +19,7 @@ hyperparameters:
   learning_rate_D: 0.0002
   beta1: 0.5
   beta2: 0.999
-  batch_size: 2
+  batch_size: 8
   epochs: 400
 checkpoint:
   dir: ./checkpoints
@@ -41,7 +41,7 @@ tensorboard:
   flush_secs: 30
 hcas_specific:
   lambda_sal: 1.0
-  image_size: [720, 1280]  # height, width => 1280x720
+  image_size: [512, 512]  # height, width => 512x512
   latent_dim: 100
 style_prior:
   enabled: false
